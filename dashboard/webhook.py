@@ -6,6 +6,7 @@
 import json
 import os
 import time
+from pathlib import Path
 
 import pandas as pd
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
@@ -16,7 +17,7 @@ from core.config import ROOT
 
 app = FastAPI()
 conn = db.connect()
-LOG = ROOT / "data" / "webhook_log.jsonl"
+LOG = Path(os.getenv("WEBHOOK_LOG_PATH") or ROOT / "data" / "webhook_log.jsonl")
 
 
 def analyze():
@@ -35,6 +36,7 @@ async def answer(role: str, request: Request, tasks: BackgroundTasks):
         raise HTTPException(404, "роль должна быть intern или mentor")
     raw = (await request.body()).decode("utf-8", errors="replace")
     # Сырой запрос пишем в журнал: по нему видно, что именно прислал сервис анкет. Файл только локальный.
+    LOG.parent.mkdir(parents=True, exist_ok=True)
     with open(LOG, "a", encoding="utf-8") as f:
         f.write(json.dumps({"time": time.strftime("%Y-%m-%d %H:%M:%S"), "role": role, "body": raw[:20000]},
                            ensure_ascii=False) + "\n")

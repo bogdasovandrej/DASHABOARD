@@ -177,9 +177,35 @@ def test_slow_decline_rule():
 
 
 def test_mentor_own_overload_is_not_intern_overload():
-    r = comments.by_dictionary("Физически не успеваю заниматься стажёрами", "mentor")
+    text = "Физически не успеваю заниматься стажёрами."
+    r = comments.by_dictionary(text, "mentor")
     assert r["signals"] == ["нет поддержки наставника"]
+    assert r["quote"] == text
     assert comments.by_dictionary("Роста не вижу", "mentor")["signals"] == []
+
+
+def test_service_failure_keeps_evidence_and_blank_neutral(tmp_path, monkeypatch):
+    conn = db.connect(tmp_path / "fallback.db")
+    text = "Получил оффер. Сижу до ночи."
+    frame = ingest.pd.DataFrame([{
+        "ФИО стажёра": "Тестов Тест", "Месяц стажировки": 1,
+        "Нагрузка мне по силам": 2,
+        "Что мешало или что хочется изменить?": text,
+        "Что было хорошего в этом месяце?": "  ",
+    }])
+    rows, _ = ingest.to_rows(frame, "intern")
+    ingest.save(conn, rows)
+    monkeypatch.setattr(comments.llm, "name", lambda: "тест-модель")
+
+    def timed_out(*args, **kwargs):
+        raise TimeoutError("тайм-аут тестовой модели")
+
+    monkeypatch.setattr(comments.llm, "chat", timed_out)
+    stats = comments.run(conn)
+    answer = metrics.comments(conn, metrics.load(conn)).iloc[0]
+    assert stats["всего"] == stats["словарь"] == 1 and len(stats["ошибки"]) == 1
+    assert answer["signals"] == ["хочет уйти", "перегруз"]
+    assert answer["quote"] == text
 
 
 def test_mask_replaces_whole_words_only():

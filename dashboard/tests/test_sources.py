@@ -1,6 +1,5 @@
 # Проверяем два способа получать ответы автоматически: по ссылке на CSV и через webhook.
 import http.server
-import os
 import sys
 import threading
 from functools import partial
@@ -26,15 +25,16 @@ def test_csv_by_link(tmp_path):
         server.shutdown()
 
 
-def test_webhook(tmp_path):
-    os.environ["DB_PATH"] = str(tmp_path / "w.db")
-    os.environ["WEBHOOK_TOKEN"] = "secret"
+def test_webhook(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "w.db"))
+    monkeypatch.setenv("WEBHOOK_TOKEN", "test-token")
+    log = tmp_path / "logs" / "webhook.jsonl"
+    monkeypatch.setenv("WEBHOOK_LOG_PATH", str(log))
     sys.modules.pop("webhook", None)
     from fastapi.testclient import TestClient
 
     import webhook
 
-    webhook.LOG = tmp_path / "log.jsonl"  # журнал теста не должен попадать в настоящий
     client = TestClient(webhook.app)
     body = {
         "ФИО стажёра": "Тестов Тест", "Подразделение": "Аналитика", "Наставник": "Белов А.",
@@ -43,10 +43,12 @@ def test_webhook(tmp_path):
         "Лишний вопрос": "да",
     }
     assert client.post("/answer/intern", json=body).status_code == 403
-    r = client.post("/answer/intern", json=body, headers={"x-token": "secret"})
+    assert not log.exists()
+    r = client.post("/answer/intern", json=body, headers={"x-token": "test-token"})
     assert r.status_code == 200 and r.json() == {"saved": 2, "unknown": ["Лишний вопрос"]}
     # тот же ответ второй раз не должен задвоиться
-    client.post("/answer/intern", json=body, headers={"x-token": "secret"})
+    client.post("/answer/intern", json=body, headers={"x-token": "test-token"}).raise_for_status()
+    assert len(log.read_text(encoding="utf-8").splitlines()) == 2
     a = metrics.load(webhook.conn)
     assert len(a) == 2
     com = metrics.comments(webhook.conn, a)

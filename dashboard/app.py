@@ -41,6 +41,8 @@ def load_all():
         return None
     a = known
     mon = metrics.monthly(a)
+    if mon.empty:
+        return None
     com = metrics.comments(conn, a)
     risk = metrics.risk_table(mon, com, a).merge(metrics.people(a), on="intern")
     return a, mon, com, risk
@@ -159,7 +161,7 @@ def page_overview():
     e_now, e_prev = metrics.enps(mon, last), metrics.enps(mon, last - 1)
     k[3].metric("eNPS", e_now, None if e_now is None or e_prev is None else f"{e_now - e_prev:+d}",
                 help="Готовность рекомендовать стажировку: доля оценок 9–10 минус доля оценок 0–6. Итог в пунктах от −100 до +100; без ответов значения нет.")
-    answered = cur["s_avg"].notna().sum()
+    answered = a.loc[(a["month"] == last) & (a["role"] == "intern") & a["kind"].ne("time"), "intern"].nunique()
     k[4].metric("Заполнили анкету", f"{answered}/{len(names)}",
                 help="Сколько стажёров ответили в последнем месяце из общего числа стажёров в данных.")
     high, mid = (risk["level"] == "высокий").sum(), (risk["level"] == "средний").sum()
@@ -231,7 +233,7 @@ def page_overview():
     with left:
         st.markdown("##### Динамика по месяцам")
         st.caption("Показывает, как меняются оценки стажёров и наставников; каждая линия усредняет ответы за месяц.")
-        g = mon.groupby("month")[["s_avg", "m_avg"]].mean()
+        g = mon.groupby("month")[["s_avg", "m_avg"]].mean().reindex(range(1, last + 1))
         fig = go.Figure()
         fig.add_scatter(x=g.index, y=g["s_avg"], name="Стажёры о стажировке", mode="lines+markers",
                         line=dict(color=BLUE, width=2), marker=dict(size=8))
@@ -247,7 +249,7 @@ def page_overview():
         q = a[(a["role"] == "intern") & (a["avg"] == 1)]
         now_q = q[q["month"] == last].groupby("short")["score"].mean().sort_values(ascending=False)
         was_q = q[q["month"] == last - 1].groupby("short")["score"].mean()
-        labels = [f"{v:.1f} ({v - was_q.get(i, v):+.1f})" for i, v in now_q.items()]
+        labels = [f"{v:.1f} ({v - was_q[i]:+.1f})" if i in was_q else f"{v:.1f}" for i, v in now_q.items()]
         fig = go.Figure(go.Bar(x=now_q.values, y=now_q.index, orientation="h", marker_color=BLUE,
                                text=labels, textposition="outside", hovertemplate="%{y}: %{x:.2f}<extra></extra>"))
         fig.update_xaxes(range=[0, 6], title="средняя оценка, в скобках изменение к прошлому месяцу")
@@ -275,8 +277,8 @@ def page_overview():
                    "дело может быть в загрузке наставника. Таблица показывает число стажёров и обе стороны оценки помощи.")
 
     st.subheader("Карта оценок: стажёры по месяцам")
-    st.caption("Средняя оценка стажёра за месяц. Сверху те, к кому нужно больше внимания. «нет» значит анкета не заполнена.")
-    table = mon.pivot(index="intern", columns="month", values="s_avg").reindex(risk["intern"])
+    st.caption("Средняя оценка стажёра за месяц. Сверху те, к кому нужно больше внимания. «нет» означает отсутствие оценки.")
+    table = mon.pivot(index="intern", columns="month", values="s_avg").reindex(index=risk["intern"], columns=range(1, last + 1))
     st.plotly_chart(heatmap(table, 60 + 24 * len(table)), width="stretch")
 
     with st.expander("Как выбираем, с кем поговорить"):
@@ -319,35 +321,56 @@ def page_intern():
     m = mon[mon["intern"] == name].sort_values("month")
     c = com[com["intern"] == name]
     last = int(mon["month"].max())
+    timeline = m.set_index("month").reindex(range(1, last + 1))
+    answers = a[(a["intern"] == name) & a["kind"].ne("time")]
 
     st.title(name)
     st.markdown(f"{badge(r['level'])} {r['dept']} · наставник {r['mentor']}")
+    st.caption(f"Показатели за {last}-й месяц. Изменение видно, если у роли есть оценки за оба месяца.")
     k = st.columns(4)
     k[0].metric("Балл", f"{r['score']} из 100",
                 help="Сумма объяснимых правил; зона зависит также от числа независимых источников сигналов.")
     s = m.dropna(subset=["s_avg"])
-    k[1].metric("Оценка стажёра", "нет" if s.empty else f"{s['s_avg'].iloc[-1]:.1f} / 5",
-                None if len(s) < 2 else delta(s["s_avg"].iloc[-1], s["s_avg"].iloc[-2]),
-                help="Средняя оценка стажёра за последний месяц, где он ответил; 5 — лучший результат.")
     mm = m.dropna(subset=["m_avg"])
-    k[2].metric("Оценка наставника", "нет" if mm.empty else f"{mm['m_avg'].iloc[-1]:.1f} / 5",
-                None if len(mm) < 2 else delta(mm["m_avg"].iloc[-1], mm["m_avg"].iloc[-2]),
-                help="Средняя оценка наставника за последний месяц, где он ответил; 5 — лучший результат.")
-    k[3].metric("Анкет заполнено", f"{len(s)} из {last}",
-                help="Сколько месяцев стажёр заполнил анкету. Пропуск оставляет пробел в динамике.")
+    missing = []
+    for column, role, label, key in [
+        (k[1], "intern", "Оценка стажёра", "s_avg"),
+        (k[2], "mentor", "Оценка наставника", "m_avg"),
+    ]:
+        received = set(answers.loc[answers["role"] == role, "month"])
+        value = timeline.at[last, key]
+        shown = "Нет оценки" if last in received else "Нет ответа"
+        if pd.notna(value):
+            shown = f"{value:.1f} / 5"
+        column.metric(label, shown, delta(value, timeline.at[last - 1, key]) if last > 1 else None)
+        missing.append(", ".join(map(str, sorted(set(timeline.index) - received))) or "нет пропусков")
+    answered = answers.loc[answers["role"] == "intern", "month"].nunique()
+    k[3].metric("Анкет стажёра", f"{answered} из {last}",
+                help="Число месяцев, в которых стажёр дал хотя бы один ответ.")
+    st.caption(f"Месяцы без ответа. Стажёр — {missing[0]}. Наставник — {missing[1]}.")
 
     left, right = st.columns([2, 3])
     with left:
         st.subheader("Из чего сложился балл")
         if r["parts"]:
             st.markdown("\n".join(f"- {t} **(+{p})**" for p, t in r["parts"]))
-            st.caption(f"Сумма баллов: {r['score']} из 100. Источники признаков: {', '.join(r['sources'])}. "
+            total = sum(points for points, _ in r["parts"])
+            cap = " В карточке действует предел 100 баллов." if total > 100 else ""
+            st.caption(f"Сумма по правилам — {total} баллов.{cap} Источники признаков: {', '.join(r['sources'])}. "
                        "Таблица правил есть на странице «Обзор».")
             if r["score"] >= RED and r["level"] != "высокий":
                 st.info(f"Балл высокий, но все признаки из одного источника ({r['sources'][0]}). "
                         "Поэтому «присмотреться», а не разговор на этой неделе.")
         else:
             st.success("Тревожных признаков нет.")
+
+        evidence = playbook.best_quote(c, last)
+        if evidence:
+            quote = comments.mask(evidence["quote"], people_names)
+            signals = ", ".join(evidence["signals"])
+            st.markdown(f"**Цитата** ({evidence['who']}, {evidence['month']} мес., {signals}) «{quote}»")
+            with st.expander("Исходный комментарий"):
+                st.write(comments.mask(evidence["text"], people_names))
 
         st.subheader("Что сделать")
         act = playbook.action(name, r["mentor"], r["codes"], r["level"], last)
@@ -383,11 +406,11 @@ def page_intern():
             st.caption("Подключите нейросеть в файле .env, и здесь появится короткая сводка с советом для HR.")
     with right:
         st.subheader("Стажёр и наставник по месяцам")
-        st.caption("Две линии помогают заметить изменение оценок и расхождение взглядов; пробел означает, что ответа нет.")
+        st.caption("Две линии показывают динамику и расхождение взглядов. Пробел означает отсутствие средней оценки.")
         fig = go.Figure()
-        fig.add_scatter(x=m["month"], y=m["s_avg"], name="Стажёр о стажировке", mode="lines+markers",
+        fig.add_scatter(x=list(timeline.index), y=timeline["s_avg"].tolist(), name="Стажёр о стажировке", mode="lines+markers",
                         line=dict(color=BLUE, width=2), marker=dict(size=8))
-        fig.add_scatter(x=m["month"], y=m["m_avg"], name="Наставник о стажёре", mode="lines+markers",
+        fig.add_scatter(x=list(timeline.index), y=timeline["m_avg"].tolist(), name="Наставник о стажёре", mode="lines+markers",
                         line=dict(color=ORANGE, width=2), marker=dict(size=8))
         fig.update_traces(hovertemplate="%{x} мес.: %{y:.2f}")
         fig.update_xaxes(title="месяц стажировки", dtick=1, range=[0.8, last + 0.2])
@@ -409,7 +432,7 @@ def page_intern():
 
     st.subheader("Комментарии")
     st.caption("Имена других людей скрыты. Цитата совпадает с показанным текстом комментария.")
-    c = c[c["text"].str.len() > 0].sort_values(["month", "role"], ascending=[False, True])
+    c = c[c["text"].notna() & c["text"].ne("")].sort_values(["month", "role"], ascending=[False, True])
     if c.empty:
         st.caption("Комментариев нет.")
     for x in c.itertuples():
@@ -548,7 +571,8 @@ def page_form():
     comments.run(conn)
 
     a, mon, com, risk = load_all()
-    r = risk[risk["intern"] == name.strip()].iloc[0]
+    person = ingest.clean_name(name)
+    r = risk[risk["intern"] == person].iloc[0]
     st.success(f"Анкета сохранена. Заполнение заняло {seconds} сек.")
     st.markdown(badge(r["level"]))
     k = st.columns(2)
@@ -556,11 +580,12 @@ def page_form():
     k[1].metric("Время заполнения", f"{seconds} сек")
     st.markdown("**Что увидел дашборд:**")
     st.markdown("\n".join(f"- {w}" for w in r["why"]) if r["why"] else "- тревожных признаков нет")
-    mine = com[(com["intern"] == name.strip()) & (com["month"] == month) & (com["text"].str.len() > 0)]
+    mine = com[(com["intern"] == person) & (com["month"] == month) & (com["role"] == role)
+               & com["text"].notna() & com["text"].ne("")]
     for x in mine.itertuples():
         tags = ", ".join(x.signals) if x.signals else "сигналов нет"
         st.markdown(f"- комментарий «{x.text}»: тон {x.sentiment:+.1f}, {tags} (разобрал: {x.source})")
-    st.button("Открыть карточку стажёра", on_click=go_to_card, args=(name.strip(),))
+    st.button("Открыть карточку стажёра", on_click=go_to_card, args=(person,))
 
 
 # ---------- данные ----------
@@ -596,13 +621,14 @@ def page_data():
                     format_func=lambda r: "Стажёры" if r == "intern" else "Наставники")
     file = st.file_uploader("Файл с ответами", type=["csv", "xlsx", "json"])
     sheet = 0
-    if file is not None and file.name.lower().endswith((".xlsx", ".xls")):
-        sheets = pd.ExcelFile(file).sheet_names
-        file.seek(0)
-        if len(sheets) > 1:
-            sheet = st.selectbox("В файле несколько листов. Какой загрузить?", sheets)
+    file_ready = False
     if file is not None:
         try:
+            if file.name.lower().endswith(".xlsx"):
+                with pd.ExcelFile(file) as excel:
+                    sheets = excel.sheet_names
+                if len(sheets) > 1:
+                    sheet = st.selectbox("В файле несколько листов. Какой загрузить?", sheets)
             file.seek(0)
             preview = ingest.read_export(file, sheet)
             file.seek(0)
@@ -610,6 +636,7 @@ def page_data():
             preview_rows, preview_unknown = ingest.to_rows(
                 preview, role, stats=preview_stats, require_average=True
             )
+            file_ready = True
             st.caption(f"Предварительная проверка без записи в базу: {len(preview)} строк, "
                        f"{len(preview_rows)} ответов распознано.")
             if preview_unknown:
@@ -625,13 +652,14 @@ def page_data():
             file.seek(0)
             st.warning(f"Предварительная проверка не пройдена: {e}")
     url = st.text_input("или ссылка на CSV")
-    if st.button("Загрузить", type="primary", disabled=not (file or url)):
+    if st.button("Загрузить", type="primary", disabled=not (file_ready if file is not None else url)):
         try:
             if file is not None:
                 file.seek(0)
             res = ingest.ingest(conn, file or url, role, sheet)
             stats = comments.run(conn)
-            st.success(f"Загружено анкет: {res['анкет']}, ответов: {res['ответов']}. "
+            st.success(f"Загружено анкет: {res['анкет принято']}, ответов: {res['ответов']}. "
+                       f"Строк в источнике: {res['анкет']}. "
                        f"Комментариев разобрано: {stats['всего']} (нейросеть {stats['нейросеть']}, словарь {stats['словарь']}).")
             if res["нераспознанные колонки"]:
                 st.warning("Эти колонки не узнал и пропустил. Если они нужны, добавьте их в файл сопоставления: "

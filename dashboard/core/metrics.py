@@ -33,11 +33,13 @@ def pick(a, role, kind, block=None):
 
 def monthly(a):
     # одна строка на стажёра и месяц: средняя оценка стажёра, средняя оценка наставника и особые вопросы
+    periods = a.loc[a["kind"].notna() & a["kind"].ne("time"), ["intern", "month"]]
     sc = a[a["kind"] == "scale"]
     avg = sc[sc["avg"] == 1].pivot_table(index=["intern", "month"], columns="role", values="score", aggfunc="mean")
-    out = avg.rename(columns={"intern": "s_avg", "mentor": "m_avg"})
+    out = periods.drop_duplicates().set_index(["intern", "month"])
+    out = out.join(avg.rename(columns={"intern": "s_avg", "mentor": "m_avg"}))
     for name, (role, kind, block) in SPECIAL.items():
-        out = out.join(pick(a, role, kind, block).groupby(["intern", "month"])["score"].mean().rename(name), how="outer")
+        out = out.join(pick(a, role, kind, block).groupby(["intern", "month"])["score"].mean().rename(name))
     out = out.reset_index()
     for col in ["s_avg", "m_avg"]:
         if col not in out:
@@ -75,8 +77,10 @@ def quality(a):
     # Можно ли верить анкете стажёра. Оценки "всё на пять" без текста за 20 секунд ничего не говорят,
     # поэтому такую анкету помечаем как формальную: это не "всё хорошо", а "мы не знаем".
     rows = []
-    s = a[a["role"] == "intern"]
+    s = a[(a["role"] == "intern") & a["kind"].notna()]
     for (intern, month), g in s.groupby(["intern", "month"]):
+        if g["kind"].eq("time").all():
+            continue
         notes = []
         sc = g[g["kind"] == "scale"]["score"]
         if len(sc) >= 4 and sc.nunique() == 1:
@@ -133,7 +137,8 @@ def risk_one(m, com, last_month, q=None, ql=None):
         score += points
         why.append((points, text, codes, src))
 
-    if s.empty or s["month"].max() < last_month:
+    received = ql if ql is not None else s
+    if last_month not in received["month"].values:
         add(20, f"не заполнил анкету за {last_month}-й месяц", "silent", src=BEHAVIOR)
 
     if not s.empty:
@@ -151,10 +156,13 @@ def risk_one(m, com, last_month, q=None, ql=None):
             elif drop <= -c.DROP_SMALL:
                 add(12, f"оценка снизилась на {abs(drop):.1f} к прошлым месяцам", "low", src=SCORES)
         # Медленное выгорание: каждый месяц чуть хуже. Разовое падение этим правилом не ловится.
-        tail = s["s_avg"].iloc[-4:]
-        if len(tail) == 4 and (tail.diff().dropna() < 0).all() and tail.iloc[0] - tail.iloc[-1] >= c.DROP_BIG:
-            add(15, f"оценка снижается три месяца подряд, всего на {tail.iloc[0] - tail.iloc[-1]:.1f}", "low", src=SCORES)
-        if len(s) >= 2 and (s["s_avg"].iloc[-2:] < c.SO_SO).all():
+        tail = s.tail(4)
+        scores = tail["s_avg"]
+        adjacent = tail["month"].diff().eq(1)
+        if (len(tail) == 4 and adjacent.iloc[1:].all() and scores.diff().dropna().lt(0).all()
+                and scores.iloc[0] - scores.iloc[-1] >= c.DROP_BIG):
+            add(15, f"оценка снижается три месяца подряд, всего на {scores.iloc[0] - scores.iloc[-1]:.1f}", "low", src=SCORES)
+        if adjacent.iloc[-1] and scores.iloc[-2:].lt(c.SO_SO).all():
             add(15, "низкая оценка держится второй месяц подряд", src=SCORES)
 
         # Средняя может прятать провал по одному вопросу, поэтому смотрим вопросы отдельно
@@ -190,7 +198,7 @@ def risk_one(m, com, last_month, q=None, ql=None):
         f = ql.iloc[-1]
         if f["formal"]:
             add(8, f"анкета за {int(f['month'])}-й месяц заполнена формально: " + ", ".join(f["notes"]), "formal", src=BEHAVIOR)
-            if len(ql) >= 2 and ql.iloc[-2]["formal"]:
+            if len(ql) >= 2 and ql.iloc[-2]["month"] == f["month"] - 1 and ql.iloc[-2]["formal"]:
                 add(8, "формальная анкета второй месяц подряд, реальной картины нет", src=BEHAVIOR)
         before = ql["chars"].iloc[:-1]
         if len(before) >= 2 and before.median() >= 30 and f["chars"] < 0.4 * before.median():

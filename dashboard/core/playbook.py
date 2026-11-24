@@ -120,7 +120,7 @@ def action(intern, mentor, codes, level, month):
 def best_quote(com, last_month):
     # Цитата-доказательство: самый свежий комментарий с сигналом, сначала "хочет уйти", сначала слова стажёра.
     # берём только комментарии с сигналом: нейросеть иногда даёт цитату и к обычному комментарию
-    c = com[(com["month"] >= last_month - 1) & (com["quote"].str.len() > 0) & (com["signals"].map(len) > 0)]
+    c = com[(com["month"] >= last_month - 1) & com["quote"].notna() & com["quote"].ne("") & (com["signals"].map(len) > 0)]
     if c.empty:
         return None
     c = c.assign(
@@ -128,4 +128,5 @@ def best_quote(com, last_month):
         other=c["role"] != "intern",
     ).sort_values(["leave", "month", "other"], ascending=[True, False, True])
     x = c.iloc[0]
-    return {"quote": x["quote"], "who": "стажёр" if x["role"] == "intern" else "наставник", "month": int(x["month"])}
+    return {"quote": x["quote"], "text": x["text"], "signals": x["signals"],
+            "who": "стажёр" if x["role"] == "intern" else "наставник", "month": int(x["month"])}

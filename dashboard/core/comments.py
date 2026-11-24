@@ -74,7 +74,8 @@ def simple(text):
 
 def by_dictionary(text, role):
     t = text.lower().replace("ё", "е")
-    signals = [s for s, words in SIGNAL_WORDS.items() if any(w in t for w in words)]
+    matches = {signal: [word for word in words if word in t] for signal, words in SIGNAL_WORDS.items()}
+    signals = [signal for signal, words in matches.items() if words]
     if role == "mentor" and "перегруз" in signals:
         # "не успеваю" в комментарии наставника это его собственная занятость, а не перегруз стажёра
         signals.remove("перегруз")
@@ -88,12 +89,11 @@ def by_dictionary(text, role):
         sentiment = -0.2  # то же правило, что в промпте: временная трудность не считается тревогой
     quote = ""
     if signals:
-        # цитата: предложение, где нашёлся самый важный сигнал ("хочет уйти" стоит в словаре первым)
-        main = SIGNAL_WORDS[signals[0]]
-        for part in re.split(r"(?<=[.!?])\s+", text):
-            if any(w in part.lower().replace("ё", "е") for w in main):
-                quote = part.strip().rstrip(".")
-                break
+        # Сохраняем дословный отрезок от первого до последнего предложения с сигналом.
+        triggers = [word for words in matches.values() for word in words]
+        parts = [part for part in re.finditer(r"\S.*?(?:[.!?](?=\s|$)|\Z)", text, re.S)
+                 if any(word in part[0].lower().replace("ё", "е") for word in triggers)]
+        quote = text[parts[0].start():parts[-1].end()] if parts else text.strip()
     return {"sentiment": sentiment, "topics": topics, "signals": signals, "quote": quote}
 
 
@@ -168,7 +168,7 @@ def _short_hash(obj):
 # Версия разбора. Поменяли промпт, списки сигналов или словарь — версия меняется сама,
 # и старые разборы пересчитываются при следующей загрузке.
 PROMPT_VERSION = _short_hash([PROMPT, TOPICS, SIGNALS, "маскировка целых слов", "длинные имена первыми", "вторая попытка"])
-DICT_VERSION = "словарь|" + _short_hash([SIGNAL_WORDS, TOPIC_WORDS, POSITIVE, NEGATIVE, TEMPORARY])
+DICT_VERSION = "словарь|" + _short_hash([SIGNAL_WORDS, TOPIC_WORDS, POSITIVE, NEGATIVE, TEMPORARY, "цитата по всем сигналам"])
 
 
 def target_version(use_llm=True):

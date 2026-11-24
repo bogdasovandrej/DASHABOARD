@@ -170,6 +170,8 @@ def to_rows(df, role, questions=None, stats=None, require_average=False):
         if not 1 <= month <= MAX_MONTH:
             stats["строк с месяцем вне диапазона 1–6"] += 1
             continue
+        start = len(rows)
+        has_answer = False
         for qid, (col, r) in cols.items():
             if r.kind == "meta":
                 continue
@@ -198,6 +200,9 @@ def to_rows(df, role, questions=None, stats=None, require_average=False):
             # uid одинаковый при повторной загрузке, поэтому дубли не появляются
             uid = hashlib.sha1(f"{role}|{intern}|{month}|{qid}".encode()).hexdigest()
             rows.append((uid, role, intern, meta(row, "dept"), clean_name(meta(row, "mentor")), month, qid, score, text, meta(row, "ts")))
+            has_answer |= r.kind != "time"
+        if not has_answer:
+            del rows[start:]
     if not rows:
         skipped = ", ".join(f"{key}: {value}" for key, value in stats.items() if value)
         detail = f" Пропуски: {skipped}." if skipped else ""
@@ -251,4 +256,5 @@ def ingest(conn, src, role, sheet=0):
     stats = {}
     rows, unknown = to_rows(df, role, stats=stats, require_average=True)
     save(conn, rows)
-    return {"анкет": len(df), "ответов": len(rows), "нераспознанные колонки": unknown, **stats}
+    return {"анкет": len(df), "анкет принято": len({(r[2], r[5]) for r in rows}),
+            "ответов": len({r[0] for r in rows}), "нераспознанные колонки": unknown, **stats}
