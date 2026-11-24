@@ -1,0 +1,15 @@
+# Local credentials and runtime data
+.env
+**/.env
+**/data/dashboard.db
+**/data/*.db
+**/data/webhook_log.jsonl
+
+# Local tooling and generated files
+.claude/
+**/__pycache__/
+**/.pytest_cache/
+**/.venv/
+**/venv/
+tunnel/
+*.py[cod]

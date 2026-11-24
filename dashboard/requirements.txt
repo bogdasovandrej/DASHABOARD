@@ -1,0 +1,10 @@
+streamlit>=1.50
+plotly
+pandas
+openpyxl
+requests
+python-dotenv
+fastapi
+uvicorn
+httpx
+pytest
