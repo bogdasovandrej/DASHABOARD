@@ -2,5 +2,4 @@
 data/dashboard.db
 __pycache__/
 .pytest_cache/
-.claude/
 data/webhook_log.jsonl

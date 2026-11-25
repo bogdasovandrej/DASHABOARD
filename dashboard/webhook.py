@@ -49,9 +49,13 @@ async def answer(role: str, request: Request, tasks: BackgroundTasks):
         rows, unknown = ingest.to_rows(pd.DataFrame([row]), role)
     except ValueError as e:
         raise HTTPException(400, str(e))
-    ingest.save(conn, rows)  # повторный запрос того же ответа не задвоится: у ответа постоянный ключ
-    tasks.add_task(analyze)
-    return {"saved": len(rows), "unknown": unknown}
+    try:
+        saved = ingest.save(conn, rows)
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+    if saved:
+        tasks.add_task(analyze)
+    return {"saved": saved, "unknown": unknown}
 
 
 @app.get("/")

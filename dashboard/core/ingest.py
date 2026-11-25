@@ -3,8 +3,12 @@
 # Все оценки сразу приводятся к шкале от 1 до 5, где 5 всегда хорошо. Тогда расчётам всё равно,
 # какая шкала была в анкете и в какую сторону задан вопрос.
 import hashlib
+import csv
 import json
 import re
+from datetime import datetime
+from functools import lru_cache
+from pathlib import Path
 
 import pandas as pd
 
@@ -24,6 +28,15 @@ def clean_name(s):
     # "  кузнецов   илья " и "КУЗНЕЦОВ ИЛЬЯ" должны стать одним человеком
     s = " ".join(str(s).split())
     return s.title() if s.islower() or s.isupper() else s
+
+
+def clean_dept(s):
+    s = " ".join(str(s).split())
+    if not s:
+        return ""
+    if s.islower():
+        return s.upper() if len(s) <= 3 else s[0].upper() + s[1:]
+    return s
 
 
 def load_questions(path=None):
@@ -199,7 +212,7 @@ def to_rows(df, role, questions=None, stats=None, require_average=False):
                     continue
             # uid одинаковый при повторной загрузке, поэтому дубли не появляются
             uid = hashlib.sha1(f"{role}|{intern}|{month}|{qid}".encode()).hexdigest()
-            rows.append((uid, role, intern, meta(row, "dept"), clean_name(meta(row, "mentor")), month, qid, score, text, meta(row, "ts")))
+            rows.append((uid, role, intern, clean_dept(meta(row, "dept")), clean_name(meta(row, "mentor")), month, qid, score, text, meta(row, "ts")))
             has_answer |= r.kind != "time"
         if not has_answer:
             del rows[start:]
@@ -215,13 +228,33 @@ def to_rows(df, role, questions=None, stats=None, require_average=False):
 
 
 def flatten_answer(body):
-    # Сводим ответ к виду {"название вопроса": ответ}. Точный формат Яндекса проверим на живом запросе,
-    # поэтому понимаем несколько вариантов: плоский словарь, список {вопрос, ответ}, вложенность в "answers"/"data".
+    # Сводим ответ к виду {"название вопроса": ответ}.
     if isinstance(body, str):
         try:
             body = json.loads(body)
         except json.JSONDecodeError:
             return {}
+    # Письмо Яндекс Форм содержит slug вопроса, а не его название. Таблица slug
+    # взята из опубликованных форм; при замене формы её нужно обновить.
+    if isinstance(body, dict) and isinstance(body.get("answer"), dict):
+        payload = body["answer"].get("data")
+        survey_id = str(body.get("survey_id") or body.get("survey", {}).get("id") or "")
+        if isinstance(payload, dict) and survey_id:
+            fields = yandex_fields()
+            out = {"Время отправки": body.get("created") or body["answer"].get("created", "")}
+            for slug, item in payload.items():
+                label = fields.get((survey_id, slug), slug)
+                value = item.get("value") if isinstance(item, dict) else item
+                if isinstance(value, list):
+                    value = ", ".join(str(v.get("text", v)) if isinstance(v, dict) else str(v) for v in value)
+                out[label] = value
+            try:
+                created = datetime.fromisoformat(str(out["Время отправки"]).replace("Z", "+00:00"))
+                started = datetime.fromisoformat(str(body["answer"]["started"]).replace("Z", "+00:00"))
+                out["Время заполнения (сек)"] = int((created - started).total_seconds())
+            except (KeyError, TypeError, ValueError):
+                pass
+            return out
     if isinstance(body, dict):
         for key in ("answers", "data", "params", "answer"):
             if key in body and isinstance(body[key], (dict, list, str)):
@@ -245,16 +278,51 @@ def flatten_answer(body):
     return out
 
 
+@lru_cache(maxsize=1)
+def yandex_fields():
+    path = Path(__file__).resolve().parent.parent / "survey" / "yandex_fields.csv"
+    with path.open(encoding="utf-8-sig", newline="") as source:
+        return {(row["survey_id"], row["slug"]): row["column"] for row in csv.DictReader(source)}
+
+
 def save(conn, rows):
-    conn.executemany("insert or replace into answers values (?,?,?,?,?,?,?,?,?,?)", rows)
-    conn.commit()
-    return len(rows)
+    # UID не хранит версию ответа. Старый webhook может прийти после исправления.
+    # Меняем ответ только когда время отправки однозначно новее сохранённого.
+    changed = 0
+    with conn:
+        for row in rows:
+            old = conn.execute("select role, intern, dept, mentor, month, qid, score, text, ts "
+                               "from answers where uid = ?", (row[0],)).fetchone()
+            if old is None:
+                conn.execute("insert into answers values (?,?,?,?,?,?,?,?,?,?)", row)
+                changed += 1
+                continue
+            if old == row[1:]:
+                continue
+            try:
+                previous = datetime.fromisoformat(str(old[-1]).replace("Z", "+00:00"))
+                incoming = datetime.fromisoformat(str(row[-1]).replace("Z", "+00:00"))
+                newer = incoming > previous
+                older = incoming < previous
+            except (TypeError, ValueError):
+                raise ValueError("Ответ изменился, но время отправки отсутствует или его нельзя сравнить. "
+                                 "Проверьте версии анкет вручную.") from None
+            if older:
+                continue
+            if not newer:
+                raise ValueError("Для одного вопроса пришли разные ответы с одинаковым временем отправки. "
+                                 "Нужна более точная метка времени или ID версии.")
+            conn.execute("update answers set role=?, intern=?, dept=?, mentor=?, month=?, "
+                         "qid=?, score=?, text=?, ts=? where uid=?", (*row[1:], row[0]))
+            changed += 1
+    return changed
 
 
 def ingest(conn, src, role, sheet=0):
     df = read_export(src, sheet)
     stats = {}
     rows, unknown = to_rows(df, role, stats=stats, require_average=True)
-    save(conn, rows)
+    changed = save(conn, rows)
     return {"анкет": len(df), "анкет принято": len({(r[2], r[5]) for r in rows}),
-            "ответов": len({r[0] for r in rows}), "нераспознанные колонки": unknown, **stats}
+            "ответов": len({r[0] for r in rows}), "сохранено": changed,
+            "нераспознанные колонки": unknown, **stats}

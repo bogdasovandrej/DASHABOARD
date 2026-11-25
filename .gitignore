@@ -3,13 +3,14 @@
 **/.env
 **/data/dashboard.db
 **/data/*.db
+**/data/*.db-journal
+**/data/*.db-wal
+**/data/*.db-shm
 **/data/webhook_log.jsonl
 
-# Local tooling and generated files
-.claude/
+# Local build and cache files
 **/__pycache__/
 **/.pytest_cache/
 **/.venv/
 **/venv/
-tunnel/
 *.py[cod]

@@ -122,7 +122,11 @@ def fetch(conn, use_llm=True):
                 except ValueError as e:
                     stats["ошибки"].append(str(e)[:200])
                     continue
-                ingest.save(conn, rows)
+                try:
+                    ingest.save(conn, rows)
+                except ValueError as e:
+                    stats["ошибки"].append(str(e)[:200])
+                    continue
                 conn.execute("insert or ignore into mail_seen values (?, ?, datetime('now','localtime'))", (mid, role))
                 seen.add(mid)
                 stats["ответов"] += 1

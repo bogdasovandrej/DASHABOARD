@@ -55,6 +55,36 @@ def test_webhook(tmp_path, monkeypatch):
     assert com["signals"].iloc[0] == ["перегруз"]
 
 
+def test_webhook_keeps_newer_correction(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "corrections.db"))
+    monkeypatch.setenv("WEBHOOK_LOG_PATH", str(tmp_path / "corrections.jsonl"))
+    monkeypatch.setenv("WEBHOOK_TOKEN", "test-token")
+    sys.modules.pop("webhook", None)
+    from fastapi.testclient import TestClient
+
+    import webhook
+
+    client = TestClient(webhook.app)
+    original = {
+        "ФИО стажёра": "Тестов Тест", "Месяц стажировки": 2,
+        "Время отправки": "2026-11-25 10:00:00", "Нагрузка мне по силам": 2,
+    }
+
+    def send(body):
+        return client.post("/answer/intern", json=body, headers={"x-token": "test-token"})
+
+    assert send(original).json()["saved"] == 1
+    assert send(original).json()["saved"] == 0
+    corrected = {**original, "Время отправки": "2026-11-25 11:00:00", "Нагрузка мне по силам": 4}
+    assert send(corrected).json()["saved"] == 1
+    assert send(original).json()["saved"] == 0
+    assert len(metrics.load(webhook.conn)) == 1
+    assert metrics.load(webhook.conn)["score"].iloc[0] == 4
+    conflicting = {**corrected, "Нагрузка мне по силам": 1}
+    assert send(conflicting).status_code == 409
+    assert metrics.load(webhook.conn)["score"].iloc[0] == 4
+
+
 def test_webhook_understands_different_shapes():
     import webhook
     flat = {"ФИО стажёра": "А Б", "Месяц стажировки": "2"}

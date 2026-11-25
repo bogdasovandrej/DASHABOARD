@@ -8,3 +8,4 @@
 
 - [Андрей](https://github.com/bogdasovandrej) — капитан и аналитика.
 - [Слава](https://github.com/Slavanchk1) — Python и сети.
+- [picakayke51-dotcom](https://github.com/picakayke51-dotcom) — разработка и аналитика.

@@ -111,7 +111,6 @@ st.sidebar.caption(f"Нейросеть: {model}" if model else "Нейросе�
 @st.fragment(run_every="60s")
 def mail_watch():
     if not mail.configured():
-        st.caption("Почта не подключена: ответы из формы загружаются вручную в разделе «Данные»")
         return
     # фрагмент выполняется и при каждом клике в дашборде, а заходить в почту нужно не чаще раза в минуту
     last = st.session_state.get("mail_last")
@@ -121,12 +120,9 @@ def mail_watch():
         st.session_state["mail_last"] = last
         if stats["ответов"]:
             st.rerun(scope="app")
-    checked, stats = last
+    _, stats = last
     if stats["ошибки"]:
         st.caption(f"Почта: {stats['ошибки'][0]}")
-    else:
-        st.caption(f"Почта проверена в {time.strftime('%H:%M', time.localtime(checked))}, "
-                   f"новых ответов: {stats['ответов']}")
 
 
 with st.sidebar:
@@ -565,9 +561,13 @@ def page_form():
         return
     seconds = round(time.time() - st.session_state.pop("f_start"))
     row = {col["intern"]: name.strip(), col["dept"]: dept, col["mentor"]: mentor, col["month"]: month,
-           col["ts"]: time.strftime("%Y-%m-%d %H:%M"), col["sec"]: seconds, **answers}
+           col["ts"]: time.strftime("%Y-%m-%d %H:%M:%S"), col["sec"]: seconds, **answers}
     rows, _ = ingest.to_rows(pd.DataFrame([row]), role)
-    ingest.save(conn, rows)
+    try:
+        ingest.save(conn, rows)
+    except ValueError as e:
+        st.error(str(e))
+        return
     comments.run(conn)
 
     a, mon, com, risk = load_all()

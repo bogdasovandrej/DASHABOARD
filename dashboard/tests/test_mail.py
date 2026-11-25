@@ -36,6 +36,45 @@ def test_foreign_letters_are_ignored():
     assert mail.parse_message(letter("[intern] без данных", "просто текст")) is None
 
 
+def test_yandex_form_mail_from_both_roles_imports_to_isolated_db(tmp_path):
+    # Структура письма проверена по двум контрольным ответам живых Яндекс Форм 25.11.
+    surveys = [
+        ("intern", "6afb375b90290223d2c3f6fe", {
+            "answer_short_text_9008994103360844": "ТЕСТ Интеграция",
+            "answer_choices_9008994300008000": [{"text": "2"}],
+            "answer_choices_9008994300014000": [{"text": "2"}],
+            "answer_long_text_9008994300030000": "ТЕСТ: нагрузка велика",
+        }),
+        ("mentor", "6afc661cba5f0233e5bffc38", {
+            "answer_short_text_9008995300004000": "ТЕСТ Интеграция",
+            "answer_choices_9008995300010000": [{"text": "2"}],
+            "answer_choices_9008995300014000": [{"text": "3"}],
+            "answer_long_text_9008995300028000": "ТЕСТ: нужно уточнить задачи",
+        }),
+    ]
+    conn = db.connect(tmp_path / "yandex.db")
+    for role, survey_id, values in surveys:
+        body = {
+            "survey_id": survey_id, "created": "2026-11-25T18:22:19Z",
+            "answer": {"started": "2026-11-25T18:21:19Z",
+                       "data": {slug: {"value": value, "question": {"slug": slug}}
+                                for slug, value in values.items()}},
+        }
+        parsed_role, row = mail.parse_message(letter(f"[{role}] Ответ на анкету", json.dumps(body, ensure_ascii=False)))
+        assert parsed_role == role
+        assert row["ФИО стажёра"] == "ТЕСТ Интеграция"
+        assert row["Месяц стажировки"] == "2"
+        assert row["Время заполнения (сек)"] == 60
+        from core import ingest
+        import pandas as pd
+        rows, unknown = ingest.to_rows(pd.DataFrame([row]), role)
+        assert not unknown
+        ingest.save(conn, rows)
+    loaded = metrics.load(conn)
+    assert set(loaded["role"]) == {"intern", "mentor"}
+    assert set(loaded["month"]) == {2}
+
+
 class FakeBox:
     letters = []
 
@@ -72,6 +111,33 @@ def test_fetch_takes_each_letter_once(tmp_path, monkeypatch):
     assert mail.fetch(conn, use_llm=False)["ответов"] == 0  # то же письмо второй раз не берём
     com = metrics.comments(conn, metrics.load(conn))
     assert com["signals"].iloc[0] == ["перегруз"]
+
+
+def test_fetch_yandex_json_for_both_roles(tmp_path, monkeypatch):
+    monkeypatch.setenv("YANDEX_MAIL", "test@yandex.ru")
+    monkeypatch.setenv("YANDEX_APP_PASSWORD", "x")
+    monkeypatch.setattr(mail.imaplib, "IMAP4_SSL", FakeBox)
+    fields = [
+        ("intern", "6afb375b90290223d2c3f6fe", "answer_short_text_9008994103360844",
+         "answer_choices_9008994300008000", "answer_choices_9008994300014000"),
+        ("mentor", "6afc661cba5f0233e5bffc38", "answer_short_text_9008995300004000",
+         "answer_choices_9008995300010000", "answer_choices_9008995300014000"),
+    ]
+    FakeBox.letters = []
+    for role, survey_id, person, month, score in fields:
+        payload = {"survey_id": survey_id, "created": "2026-11-25T18:22:19Z",
+                   "answer": {"started": "2026-11-25T18:21:19Z", "data": {
+                       person: {"value": "ТЕСТ Пара"},
+                       month: {"value": [{"text": "2"}]},
+                       score: {"value": [{"text": "3"}]},
+                   }}}
+        FakeBox.letters.append(letter(f"[{role}] Ответ на анкету",
+                                      json.dumps(payload, ensure_ascii=False), mid=f"<{role}@test>"))
+    conn = db.connect(tmp_path / "live-shape.db")
+    result = mail.fetch(conn, use_llm=False)
+    assert result["ответов"] == 2 and not result["ошибки"]
+    assert set(metrics.load(conn)["role"]) == {"intern", "mentor"}
+    assert mail.fetch(conn, use_llm=False)["ответов"] == 0
 
 
 def test_fetch_without_settings(tmp_path, monkeypatch):
