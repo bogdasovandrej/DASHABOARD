@@ -14,3 +14,13 @@
 **/.venv/
 **/venv/
 *.py[cod]
+
+# Local preparation and research, outside the public product
+output/
+trenirovka/
+otvet-kod-goroda.txt
+podgotovka.md
+resheniya.md
+sverka.md
+vebinar_profil.md
+vebinar_profil_rasshifrovka.txt
