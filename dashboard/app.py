@@ -544,71 +544,49 @@ def rub(x):
 def page_effect():
     a, mon, com, risk = data
     last = int(mon["month"].max())
-    high = int((risk["level"] == "высокий").sum())
-    att = risk[risk["level"] != "низкий"]
 
-    st.title("Эффект и как его измерить")
-    st.warning("Все деньги на этой странице посчитаны из допущений слева. Настоящие цифры знает только МГТС: "
-               "подставьте их, и расчёт пересчитается.")
+    st.markdown(
+        '<div class="mgts-bar"><div style="display:flex;align-items:center;">'
+        '<div class="mgts-sq">МГТС</div>'
+        '<div><div style="font-weight:700;font-size:18px;">Калькулятор окупаемости решения</div>'
+        '<div style="font-size:12.5px;opacity:0.85;">Подставьте реальные ставки компании — расчёт пересчитается автоматически</div></div></div></div>',
+        unsafe_allow_html=True,
+    )
 
     left, right = st.columns([2, 3])
     with left:
-        st.subheader("Допущения")
-        st.caption("Стартовые значения учебные. Подставьте данные МГТС перед тем, как обсуждать сумму с HR.")
-        pay = st.number_input("Выплата стажёру в месяц, ₽", 0, 500000, 40000, step=5000, key="e_pay")
-        months = st.number_input("На каком месяце стажёр обычно уходит", 1, 6, 4, key="e_months")
-        hours = st.number_input("Часов наставника на стажёра в неделю", 0, 40, 4, key="e_hours")
+        st.subheader("Параметры потока")
+        pay = st.number_input("Выплата стажёру в месяц, ₽", 0, 500000, 45000, step=5000, key="e_pay")
+        months = st.number_input("На каком месяце обычно уходит стажёр", 1, 6, 4, key="e_months")
+        hours = st.number_input("Часов наставника в неделю на стажёра", 0, 40, 4, key="e_hours")
         rate = st.number_input("Стоимость часа наставника, ₽", 0, 20000, 1500, step=100, key="e_rate")
-        rehire = st.number_input("Набор нового стажёра на замену, ₽", 0, 1000000, 60000, step=5000, key="e_rehire")
-        share = st.slider("Какую долю стажёров из зоны «поговорить» удаётся удержать, если вовремя вмешаться",
-                          0, 100, 30, step=5, format="%d%%", key="e_share")
-        price = st.number_input("Цена нейросети за 1000 токенов, ₽", 0.0, 100.0, 0.8, step=0.1, key="e_price")
-        server = st.number_input("Сервер и поддержка в месяц, ₽", 0, 1000000, 3000, step=500, key="e_server")
+        rehire = st.number_input("Стоимость повторного подбора, ₽", 0, 1000000, 60000, step=5000, key="e_rehire")
+        kept_n = st.slider("Сколько стажёров помог удержать дашборд за поток", 1, 10, 1, key="e_kept")
+        server = st.number_input("Сервер и ИИ-модель в месяц, ₽", 0, 1000000, 4000, step=500, key="e_server")
 
     parts, loss = effect.loss_per_intern(pay, months, hours, rate, rehire)
     texts = com[com["text"].str.len() > 0]
-    scale = 6 / last  # в базе пока не все шесть месяцев, пересчитываем на полный поток
-    ai = effect.ai_cost(len(texts) * scale, texts["text"].str.len().sum() * scale, price)
-    res = effect.summary(loss, high, share / 100, ai, server)
+    scale = 6 / max(1, last)
+    ai = effect.ai_cost(len(texts) * scale, texts["text"].str.len().sum() * scale, 0.8)
+    total_cost = server * 6 + ai
+    saved = kept_n * loss
+    ratio = saved / total_cost if total_cost else None
 
     with right:
-        st.subheader("Результат на один поток стажёров")
+        st.subheader("Экономика на один 6-месячный поток")
         k = st.columns(3)
-        k[0].metric("Потеря на одного ушедшего", rub(loss))
-        k[1].metric("Сохраняем за поток", rub(res["saved"]), help="Число удержанных стажёров, умноженное на потерю на одного")
-        k[2].metric("Затраты за поток", rub(res["cost"]), help="Нейросеть и сервер за шесть месяцев")
-        st.markdown(
-            f"Сейчас в зоне «поговорить» **{high}** из {len(risk)} стажёров. Если удержать {share}% из них "
-            f"(это {res['kept']:.1f} чел.), поток сохраняет **{rub(res['saved'])}** при затратах **{rub(res['cost'])}**."
-            + (f" Это примерно **{res['ratio']:.0f} к 1**." if res["ratio"] and res["ratio"] >= 1 else "")
+        k[0].metric("Потеря на 1 ушедшем", rub(loss))
+        k[1].metric("Сохранено за поток", rub(saved))
+        k[2].metric("Затраты за 6 мес.", rub(total_cost))
+        ratio_txt = f" — это окупаемость примерно **{ratio:.0f}×**" if ratio and ratio >= 1 else ""
+        st.success(
+            f"Если вовремя заметить риск и удержать **{kept_n} стажёра**, компания сохраняет **{rub(saved)}** "
+            f"при расходах **{rub(total_cost)}** за весь полугодовой цикл{ratio_txt}."
         )
-        st.caption("Сохранённая сумма — сценарная оценка из введённых допущений, не измеренная экономия.")
-        st.markdown("##### Из чего складывается потеря на одного стажёра")
+        st.markdown("##### Из чего складывается потеря при уходе 1 стажёра")
         st.dataframe(pd.DataFrame({"Статья": list(parts), "Сумма": [rub(v) for v in parts.values()]}),
                      hide_index=True, width="stretch")
-        st.markdown("##### Из чего складываются затраты")
-        st.dataframe(pd.DataFrame({
-            "Статья": ["Нейросеть: разбор комментариев за 6 месяцев", "Сервер и поддержка за 6 месяцев"],
-            "Сумма": [rub(ai), rub(server * 6)],
-        }), hide_index=True, width="stretch")
-        st.caption(f"Нейросеть считается от объёма текста: около {len(texts) * scale:.0f} комментариев за поток. "
-                   "Баллы считает формула, поэтому токены тратятся только на чтение комментариев.")
-
-    st.subheader("Как проверить, что дашборд работает")
-    done = db.actions(conn)
-    done_now = done[done["month"] == last]["intern"].nunique()
-    answered = mon[mon["month"] == last]["s_avg"].notna().sum()
-    st.dataframe(pd.DataFrame([
-        ["Доля стажёров, перешедших в штат", "нужны данные HR об исходах", "сравнить поток с дашбордом и прошлый поток без него"],
-        ["Доля ушедших до конца стажировки", "нужны данные HR об исходах", "то же сравнение потоков"],
-        ["Опережение: за сколько месяцев до ухода появился сигнал", "на тестовых историях 1-2 месяца",
-         "после потока сверить дату первого сигнала с датой ухода"],
-        ["Ложные тревоги", "на тестовых данных лишних красных нет", "HR после разговора отмечает, подтвердилась ли проблема"],
-        ["Тревоги, по которым HR что-то сделал", f"{done_now} из {len(att)} в этом месяце", "цель: все тревоги за неделю"],
-        ["Заполненные анкеты", f"{answered} из {len(risk)} в этом месяце", "доля не должна падать от месяца к месяцу"],
-    ], columns=["Показатель", "Сейчас", "Как проверяем"]), hide_index=True, width="stretch")
-    st.caption("Классический A/B-тест здесь не подходит: стажёров мало, и оставлять часть без помощи неэтично. "
-               "Поэтому сравниваем потоки между собой.")
+        st.caption("Стартовые значения — ориентировочные. Все суммы пересчитываются под реальные ставки МГТС.")
 
 
 # ---------- пробная анкета ----------
