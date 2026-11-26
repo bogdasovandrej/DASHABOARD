@@ -13,6 +13,8 @@ import imaplib
 import json
 import os
 import re
+import threading
+import time
 from datetime import date, timedelta
 from email.header import decode_header, make_header
 from email.utils import parsedate_to_datetime
@@ -24,6 +26,13 @@ from . import comments, ingest
 HOST = "imap.yandex.ru"
 ROLES = {"[intern]": "intern", "[mentor]": "mentor"}
 LOOK_BACK_DAYS = 30  # письма старше не смотрим, чтобы проверка шла быстро
+_LOCK = threading.Lock()
+
+
+def _creds():
+    user = (os.getenv("YANDEX_MAIL") or "").strip().strip('"').strip("'")
+    pwd = (os.getenv("YANDEX_APP_PASSWORD") or "").strip().strip('"').strip("'")
+    return user, pwd
 
 
 def subject_roles():
@@ -34,7 +43,8 @@ def subject_roles():
 
 
 def configured():
-    return bool(os.getenv("YANDEX_MAIL") and os.getenv("YANDEX_APP_PASSWORD"))
+    user, pwd = _creds()
+    return bool(user and pwd)
 
 
 def ensure_table(conn):
@@ -142,40 +152,50 @@ def fetch(conn, use_llm=True):
     ensure_table(conn)
     seen = {r[0] for r in conn.execute("select message_id from mail_seen")}
     since = (date.today() - timedelta(days=LOOK_BACK_DAYS)).strftime("%d-%b-%Y")
-    try:
-        box = imaplib.IMAP4_SSL(HOST, 993, timeout=20)
-        box.login(os.getenv("YANDEX_MAIL"), os.getenv("YANDEX_APP_PASSWORD"))
-        box.select("INBOX", readonly=True)  # только читаем: ничего в ящике не меняем
-        for mark in subject_roles():
-            _, found = box.search(None, "SINCE", since, "SUBJECT", f'"{mark}"')
-            for num in found[0].split():
-                _, data = box.fetch(num, "(RFC822)")
-                msg = email.message_from_bytes(data[0][1])
-                mid = msg.get("Message-ID") or f"{mark}-{num.decode()}"
-                if mid in seen:
-                    continue
-                stats["писем"] += 1
-                parsed = parse_message(msg)
-                if not parsed:
-                    stats["пропущено"] += 1
-                    continue
-                role, row = parsed
+    user, pwd = _creds()
+    with _LOCK:
+        try:
+            box = None
+            for attempt in range(2):
                 try:
-                    rows, _ = ingest.to_rows(pd.DataFrame([row]), role)
-                except ValueError as e:
-                    stats["ошибки"].append(str(e)[:200])
-                    continue
-                try:
-                    ingest.save(conn, rows)
-                except ValueError as e:
-                    stats["ошибки"].append(str(e)[:200])
-                    continue
-                conn.execute("insert or ignore into mail_seen values (?, ?, datetime('now','localtime'))", (mid, role))
-                seen.add(mid)
-                stats["ответов"] += 1
-        box.logout()
-    except (imaplib.IMAP4.error, OSError) as e:
-        stats["ошибки"].append(f"не удалось зайти в почту: {e}"[:200])
+                    box = imaplib.IMAP4_SSL(HOST, 993, timeout=20)
+                    box.login(user, pwd)
+                    break
+                except (imaplib.IMAP4.error, OSError):
+                    if attempt == 1:
+                        raise
+                    time.sleep(1.0)
+            box.select("INBOX", readonly=True)  # только читаем: ничего в ящике не меняем
+            for mark in subject_roles():
+                _, found = box.search(None, "SINCE", since, "SUBJECT", f'"{mark}"')
+                for num in found[0].split():
+                    _, data = box.fetch(num, "(RFC822)")
+                    msg = email.message_from_bytes(data[0][1])
+                    mid = msg.get("Message-ID") or f"{mark}-{num.decode()}"
+                    if mid in seen:
+                        continue
+                    stats["писем"] += 1
+                    parsed = parse_message(msg)
+                    if not parsed:
+                        stats["пропущено"] += 1
+                        continue
+                    role, row = parsed
+                    try:
+                        rows, _ = ingest.to_rows(pd.DataFrame([row]), role)
+                    except ValueError as e:
+                        stats["ошибки"].append(str(e)[:200])
+                        continue
+                    try:
+                        ingest.save(conn, rows)
+                    except ValueError as e:
+                        stats["ошибки"].append(str(e)[:200])
+                        continue
+                    conn.execute("insert or ignore into mail_seen values (?, ?, datetime('now','localtime'))", (mid, role))
+                    seen.add(mid)
+                    stats["ответов"] += 1
+            box.logout()
+        except (imaplib.IMAP4.error, OSError) as e:
+            stats["ошибки"].append(f"не удалось зайти в почту: {e}"[:200])
     conn.commit()
     if stats["ответов"]:
         comments.run(conn, use_llm=use_llm)

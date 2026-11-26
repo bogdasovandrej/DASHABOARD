@@ -202,8 +202,7 @@ def mail_watch():
         if stats["ответов"]:
             st.rerun(scope="app")
     _, stats = last
-    if stats["ошибки"]:
-        st.caption(f"Почта: {stats['ошибки'][0]}")
+    # Технические ошибки фоновой проверки не засоряют боковую панель; подробности видны на странице «Данные».
 
 
 with st.sidebar:
@@ -684,8 +683,6 @@ def page_data():
     k[3].metric("Из них разобрано", n_ai)
 
     st.subheader("Ответы из Яндекс Форм")
-    st.caption("Форма после каждого заполнения шлёт письмо с ответом. Дашборд проверяет почту раз в минуту сам, "
-               "кнопка ниже проверяет сразу.")
     if mail.configured():
         if st.button("Проверить почту сейчас"):
             with st.spinner("Проверяю почту"):
@@ -699,8 +696,7 @@ def page_data():
         st.info("Почта не подключена. Впишите YANDEX_MAIL и YANDEX_APP_PASSWORD в файл .env и перезапустите дашборд.")
 
     st.subheader("Загрузить ответы файлом")
-    st.caption("Подходит выгрузка из любого сервиса анкет: CSV, XLSX или JSON. Можно дать ссылку на CSV, "
-               "например на опубликованную Google Таблицу с ответами формы. Повторная загрузка не создаёт дублей.")
+    st.caption("Допустимые форматы: CSV, XLSX, JSON или ссылка на CSV.")
     role = st.radio("Чьи это ответы", ["intern", "mentor"], horizontal=True,
                     format_func=lambda r: "Стажёры" if r == "intern" else "Наставники")
     file = st.file_uploader("Файл с ответами", type=["csv", "xlsx", "json"])
