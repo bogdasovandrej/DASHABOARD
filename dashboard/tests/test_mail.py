@@ -145,3 +145,23 @@ def test_fetch_without_settings(tmp_path, monkeypatch):
     monkeypatch.delenv("YANDEX_APP_PASSWORD", raising=False)
     st = mail.fetch(db.connect(tmp_path / "n.db"))
     assert st["ответов"] == 0 and "YANDEX_MAIL" in st["ошибки"][0]
+
+
+def test_parse_default_yandex_plain_text_mgts(monkeypatch):
+    monkeypatch.setenv("QUESTIONS_CSV", "survey/questions_mgts.csv")
+    body = (
+        "ID стажера: СТ-006\n"
+        "Подразделение / направление стажировки: IT\n"
+        "Контрольный период: Месяц 6\n"
+        "Понятность задач: 2\n"
+        "Поддержка и обратная связь наставника: 2\n"
+        "Комфортность нагрузки: 3\n"
+        "Сложности за период: Высокая нагрузка и редкая обратная связь.\n"
+    )
+    msg = letter("[intern] Ответ на анкету", body)
+    msg["Date"] = "Thu, 26 Nov 2026 10:25:00 +0300"
+    role, row = mail.parse_message(msg)
+    assert role == "intern"
+    assert row["ID стажера"] == "СТ-006"
+    assert row["Понятность задач"] == "2"
+    assert row["Время отправки"].startswith("2026-11-26T10:25:00")

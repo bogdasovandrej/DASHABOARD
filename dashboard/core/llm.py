@@ -18,7 +18,7 @@ _token = {"value": None, "expires": 0}
 
 
 def name():
-    if os.getenv("GIGACHAT_KEY"):
+    if os.getenv("GIGACHAT_KEY") and os.getenv("GIGACHAT_ENABLED", "1") != "0" and os.getenv("GIGACHAT_CA"):
         return os.getenv("GIGACHAT_MODEL", "GigaChat-2")
     if os.getenv("LLM_BASE_URL"):
         return os.getenv("LLM_MODEL", "модель не указана")
@@ -27,12 +27,11 @@ def name():
 
 def _verify():
     # Сервера Сбера работают с сертификатом Минцифры, обычный Python ему не доверяет.
-    # Правильно: скачать сертификат и указать путь в GIGACHAT_CA. Без него проверку отключаем.
+    # Путь к доверенному корневому сертификату нужно указать в GIGACHAT_CA.
     ca = os.getenv("GIGACHAT_CA")
     if ca:
         return ca
-    requests.packages.urllib3.disable_warnings()
-    return False
+    raise RuntimeError("GigaChat требует GIGACHAT_CA: проверка TLS без сертификата запрещена")
 
 
 def _giga_token():
@@ -58,14 +57,16 @@ def _giga_token():
 
 def chat(system, user, temperature=0.1):
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
-    if os.getenv("GIGACHAT_KEY"):
+    if os.getenv("GIGACHAT_KEY") and os.getenv("GIGACHAT_ENABLED", "1") != "0":
         url = os.getenv("GIGACHAT_URL", GIGA_API).rstrip("/") + "/chat/completions"
         headers = {"Authorization": f"Bearer {_giga_token()}"}
         verify = _verify()
-    else:
+    elif os.getenv("LLM_BASE_URL"):
         url = os.getenv("LLM_BASE_URL").rstrip("/") + "/chat/completions"
         headers = {"Authorization": f"Bearer {os.getenv('LLM_API_KEY', 'no-key')}"}
         verify = True
+    else:
+        raise RuntimeError("Внешняя модель не подключена")
     r = requests.post(
         url,
         headers=headers,

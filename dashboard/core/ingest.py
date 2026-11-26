@@ -25,8 +25,13 @@ def norm(s):
 
 
 def clean_name(s):
-    # "  кузнецов   илья " и "КУЗНЕЦОВ ИЛЬЯ" должны стать одним человеком
+    # "  кузнецов   илья " и "КУЗНЕЦОВ ИЛЬЯ" должны стать одним человеком;
+    # коды вроде "СТ-001" и "Н-001" сохраняем в верхнем регистре
     s = " ".join(str(s).split())
+    if not s:
+        return ""
+    if re.fullmatch(r"[A-Za-zА-Яа-яЁё]{1,4}-\d+", s):
+        return s.upper()
     return s.title() if s.islower() or s.isupper() else s
 
 

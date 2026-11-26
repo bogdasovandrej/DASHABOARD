@@ -15,6 +15,7 @@ import os
 import re
 from datetime import date, timedelta
 from email.header import decode_header, make_header
+from email.utils import parsedate_to_datetime
 
 import pandas as pd
 
@@ -23,6 +24,13 @@ from . import comments, ingest
 HOST = "imap.yandex.ru"
 ROLES = {"[intern]": "intern", "[mentor]": "mentor"}
 LOOK_BACK_DAYS = 30  # письма старше не смотрим, чтобы проверка шла быстро
+
+
+def subject_roles():
+    return {
+        os.getenv("YANDEX_SUBJECT_INTERN", "[intern]").lower(): "intern",
+        os.getenv("YANDEX_SUBJECT_MENTOR", "[mentor]").lower(): "mentor",
+    }
 
 
 def configured():
@@ -70,7 +78,34 @@ def extract_seconds(text):
 
 def role_of(subject):
     s = subject.lower()
-    return next((role for mark, role in ROLES.items() if mark in s), None)
+    return next((role for mark, role in subject_roles().items() if mark in s), None)
+
+
+def extract_labeled_lines(text, role):
+    # Поддержка стандартного текстового письма Яндекс Форм («Ответы на вопросы»):
+    # строки вида «Понятность задач: 4» или вопрос на одной строке, ответ на следующей.
+    q = ingest.load_questions()
+    q = q[q["role"].isin(["any", role])]
+    by_key = {r.key: r.column for r in q.itertuples()}
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    out = {}
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if ":" in line:
+            left, right = line.split(":", 1)
+            col = by_key.get(ingest.norm(left))
+            if col and right.strip():
+                out[col] = right.strip()
+                i += 1
+                continue
+        col = by_key.get(ingest.norm(line))
+        if col and i + 1 < len(lines) and ingest.norm(lines[i + 1]) not in by_key:
+            out[col] = lines[i + 1]
+            i += 2
+            continue
+        i += 1
+    return out or None
 
 
 def parse_message(msg):
@@ -81,9 +116,17 @@ def parse_message(msg):
         return None
     text = body_text(msg)
     data = extract_json(text)
-    if data is None:
-        return None
-    row = ingest.flatten_answer(data)
+    if data is not None:
+        row = ingest.flatten_answer(data)
+    else:
+        row = extract_labeled_lines(text, role)
+        if not row:
+            return None
+    if not row.get("Время отправки") and msg.get("Date"):
+        try:
+            row["Время отправки"] = parsedate_to_datetime(msg["Date"]).isoformat()
+        except (TypeError, ValueError):
+            pass
     sec = extract_seconds(text)
     if sec is not None:
         row["Время заполнения (сек)"] = sec
@@ -103,7 +146,7 @@ def fetch(conn, use_llm=True):
         box = imaplib.IMAP4_SSL(HOST, 993, timeout=20)
         box.login(os.getenv("YANDEX_MAIL"), os.getenv("YANDEX_APP_PASSWORD"))
         box.select("INBOX", readonly=True)  # только читаем: ничего в ящике не меняем
-        for mark in ROLES:
+        for mark in subject_roles():
             _, found = box.search(None, "SINCE", since, "SUBJECT", f'"{mark}"')
             for num in found[0].split():
                 _, data = box.fetch(num, "(RFC822)")

@@ -49,7 +49,58 @@ def monthly(a):
 
 
 def people(a):
-    return a.sort_values("month").groupby("intern")[["dept", "mentor"]].last().reset_index()
+    def last_non_empty(series):
+        valid = series.fillna("").astype(str).str.strip()
+        valid = valid[valid.ne("")]
+        return valid.iloc[-1] if len(valid) else "не указан"
+
+    return a.sort_values("month").groupby("intern")[["dept", "mentor"]].agg(last_non_empty).reset_index()
+
+
+def survey_status(a, month):
+    # Статус прохождения опросов по каждому стажёру и наставнику за выбранный контрольный период
+    p = people(a)
+    cur = a[(a["month"] == month) & a["kind"].notna() & a["kind"].ne("time")]
+    s_done = set(cur.loc[cur["role"] == "intern", "intern"])
+    m_done = set(cur.loc[cur["role"] == "mentor", "intern"])
+    mon = monthly(a)
+    cur_m = mon[mon["month"] == month].set_index("intern")
+    rows = []
+    for r in p.itertuples():
+        s_val = cur_m.at[r.intern, "s_avg"] if r.intern in cur_m.index else float("nan")
+        m_val = cur_m.at[r.intern, "m_avg"] if r.intern in cur_m.index else float("nan")
+        gap = round(s_val - m_val, 2) if pd.notna(s_val) and pd.notna(m_val) else None
+        rows.append({
+            "ID стажёра": r.intern,
+            "Подразделение": r.dept,
+            "Наставник": r.mentor,
+            "Опрос стажёра": "Сдал" if r.intern in s_done else "Нет ответа",
+            "Опрос наставника": "Сдал" if r.intern in m_done else "Нет ответа",
+            "Оценка стажёра": None if pd.isna(s_val) else round(float(s_val), 2),
+            "Оценка наставника": None if pd.isna(m_val) else round(float(m_val), 2),
+            "Расхождение (С−Н)": gap,
+        })
+    return pd.DataFrame(rows)
+
+
+def paired_gaps(a, intern, month):
+    # Сравнение по сопоставимым аспектам (один и тот же block у стажёра и наставника)
+    cur = a[(a["intern"] == intern) & (a["month"] == month) & (a["kind"] == "scale") & a["block"].notna() & a["block"].ne("")]
+    if cur.empty:
+        return pd.DataFrame(columns=["Аспект", "Стажёр", "Наставник", "Разница"])
+    piv = cur.pivot_table(index="block", columns="role", values="score", aggfunc="mean")
+    if "intern" not in piv or "mentor" not in piv:
+        return pd.DataFrame(columns=["Аспект", "Стажёр", "Наставник", "Разница"])
+    both = piv.dropna(subset=["intern", "mentor"]).copy()
+    if both.empty:
+        return pd.DataFrame(columns=["Аспект", "Стажёр", "Наставник", "Разница"])
+    both["Разница"] = (both["intern"] - both["mentor"]).round(1)
+    return pd.DataFrame({
+        "Аспект": [b.capitalize() for b in both.index],
+        "Стажёр": both["intern"].round(1).values,
+        "Наставник": both["mentor"].round(1).values,
+        "Разница": both["Разница"].values,
+    })
 
 
 def comments(conn, a):
@@ -125,10 +176,15 @@ def level(score, sources=(), leave=False):
     return "низкий"
 
 
-def risk_one(m, com, last_month, q=None, ql=None):
+def risk_one(m, com, last_month, q=None, ql=None, pair_a=None):
     # m: строки monthly одного стажёра, com: его комментарии, q: его оценки по отдельным вопросам.
     # Возвращает (балл, причины с баллами, коды причин). По кодам потом выбирается действие для HR.
-    m = m.sort_values("month")
+    m = m[m["month"] <= last_month].sort_values("month")
+    com = com[com["month"] <= last_month]
+    if q is not None:
+        q = q[q["month"] <= last_month]
+    if ql is not None:
+        ql = ql[ql["month"] <= last_month]
     s = m.dropna(subset=["s_avg"])
     score, why = 0, []
 
@@ -184,6 +240,13 @@ def risk_one(m, com, last_month, q=None, ql=None):
                 add(15, f"наставник оценивает на {abs(gap):.1f} выше, чем себя чувствует стажёр", "hidden", src=SCORES)
             elif gap >= c.GAP:
                 add(15, f"стажёр доволен, а наставник оценивает его на {gap:.1f} ниже", "results", src=SCORES)
+        if pair_a is not None and len(pair_a):
+            pg = paired_gaps(pair_a, pair_a["intern"].iloc[0], last_month)
+            big_pg = pg[pg["Разница"].abs() >= 1.5]
+            for pr in big_pg.itertuples():
+                code = "hidden" if pr.Разница < 0 else "results"
+                add(15, f"расхождение по блоку «{pr.Аспект.lower()}»: стажёр {pr.Стажёр:.1f}, наставник {pr.Наставник:.1f}",
+                    code, src=SCORES)
         if pd.notna(r["m_avg"]) and r["m_avg"] < c.LOW:
             add(20, f"средняя оценка наставника {r['m_avg']:.1f} из 5", "results", src=SCORES)
         if pd.notna(r["m_hire"]) and r["m_hire"] <= 2:
@@ -204,7 +267,8 @@ def risk_one(m, com, last_month, q=None, ql=None):
         if len(before) >= 2 and before.median() >= 30 and f["chars"] < 0.4 * before.median():
             add(6, "комментарии стали намного короче, чем раньше", src=BEHAVIOR)
 
-    recent = com[com["month"] >= last_month - 1]
+    # Предыдущая уже решённая проблема не должна окрашивать текущий месяц.
+    recent = com[com["month"] == last_month]
     signals = sorted({s for row in recent["signals"] for s in row})
     if "хочет уйти" in signals:
         add(50, "в комментарии есть намерение уйти", "leave", src=TEXT)
@@ -221,14 +285,20 @@ def risk_one(m, com, last_month, q=None, ql=None):
     return min(100, score), [(p, t) for p, t, _, _ in why], codes, sources
 
 
-def risk_table(mon, com, a):
-    last_month = int(mon["month"].max())
-    qs = a[(a["role"] == "intern") & (a["avg"] == 1)]
-    ql = quality(a)
+def risk_table(mon, com, a, last_month=None):
+    last_month = int(mon["month"].max()) if last_month is None else int(last_month)
+    a_cut = a[a["month"] <= last_month]
+    mon_cut = mon[mon["month"] <= last_month]
+    com_cut = com[com["month"] <= last_month]
+    qs = a_cut[(a_cut["role"] == "intern") & (a_cut["avg"] == 1)]
+    ql = quality(a_cut)
     rows = []
-    for intern, m in mon.groupby("intern"):
-        score, parts, codes, sources = risk_one(m, com[com["intern"] == intern], last_month, qs[qs["intern"] == intern],
-                              ql[ql["intern"] == intern])
+    for intern, m in mon_cut.groupby("intern"):
+        score, parts, codes, sources = risk_one(
+            m, com_cut[com_cut["intern"] == intern], last_month,
+            qs[qs["intern"] == intern], ql[ql["intern"] == intern],
+            pair_a=a_cut[a_cut["intern"] == intern],
+        )
         s = m.dropna(subset=["s_avg"]).sort_values("month")
         rows.append({
             "intern": intern,

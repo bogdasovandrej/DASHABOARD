@@ -9,18 +9,29 @@ import streamlit as st
 from core import comments, db, effect, ingest, llm, mail, metrics, playbook
 from core.config import RED, YELLOW, demo_dir
 
-st.set_page_config(page_title="Стажировки МГТС", layout="wide")
+st.set_page_config(page_title="МГТС · Дашборд стажировок", layout="wide")
 
-BLUE, ORANGE = "#2a78d6", "#eb6834"
-SCALE = [[0, "#e34948"], [0.5, "#f0efec"], [1, "#2a78d6"]]  # 1 красный, 3 серый, 5 синий
-# Внутри кода уровни называются высокий / средний / низкий. На экран выводим не «риск»,
-# а то, что HR делать: мы не предсказываем уход, а подсказываем, с кем поговорить.
-ZONE = {"высокий": "Поговорить на этой неделе", "средний": "Присмотреться", "низкий": "Всё в порядке"}
+BLUE, ORANGE = "#0098EA", "#003B73"
+SCALE = [[0, "#DC2626"], [0.5, "#F59E0B"], [1, "#0098EA"]]  # 1 критично, 3 внимание, 5 отлично
+# Светофор по ТЗ: критичный сигнал / зона внимания / положительная оценка
+ZONE = {"высокий": "Критичный сигнал", "средний": "Зона внимания", "низкий": "Всё хорошо"}
+ZONE_EMOJI = {"высокий": "🔴 Критичный сигнал", "средний": "🟡 Зона внимания", "низкий": "🟢 Всё хорошо"}
 ZONE_COLOR = {"высокий": "red", "средний": "orange", "низкий": "green"}
+
+st.markdown(
+    """<style>
+    .mgts-bar {background: linear-gradient(90deg, #001C3D 0%, #0077CC 65%, #0098EA 100%);
+               color: white; padding: 12px 18px; border-radius: 10px; margin-bottom: 14px;
+               display: flex; align-items: center; justify-content: space-between;}
+    .mgts-badge {background: #0098EA; color: white; font-weight: 700; padding: 4px 10px;
+                 border-radius: 6px; letter-spacing: 0.5px; margin-right: 10px;}
+    </style>""",
+    unsafe_allow_html=True,
+)
 
 
 def badge(level):
-    return f":{ZONE_COLOR[level]}-background[{ZONE[level]}]"
+    return f":{ZONE_COLOR[level]}-background[{ZONE_EMOJI[level]}]"
 PAGES = ["Обзор", "Стажёр", "Эффект", "Анкета", "Данные"]
 
 
@@ -32,7 +43,7 @@ def get_conn():
 conn = get_conn()
 
 
-def load_all():
+def load_all(target_month=None):
     a = metrics.load(conn)
     # ответы на вопросы, которых нет в текущем файле сопоставления, не считаем (например, остались от старой анкеты)
     known = a[a["kind"].notna()]
@@ -44,7 +55,7 @@ def load_all():
     if mon.empty:
         return None
     com = metrics.comments(conn, a)
-    risk = metrics.risk_table(mon, com, a).merge(metrics.people(a), on="intern")
+    risk = metrics.risk_table(mon, com, a, last_month=target_month).merge(metrics.people(a), on="intern")
     return a, mon, com, risk
 
 
@@ -94,16 +105,27 @@ def open_card():
 
 
 # ---------- боковая панель ----------
-st.sidebar.title("Стажировки МГТС")
+st.sidebar.markdown('<div style="background:#0098EA;color:#fff;font-weight:700;padding:8px 12px;border-radius:8px;font-size:18px;margin-bottom:8px;">МГТС · Стажировки</div>', unsafe_allow_html=True)
 page = st.sidebar.radio("Раздел", PAGES, key="page")
-data = load_all()
-if data:
+base_data = load_all()
+if base_data:
+    months_avail = sorted(int(m) for m in base_data[1]["month"].dropna().unique())
+    selected_month = st.sidebar.selectbox(
+        "Контрольный период",
+        months_avail,
+        index=len(months_avail) - 1,
+        format_func=lambda m: f"Месяц {m}",
+        key="period_month",
+    )
+    data = base_data if selected_month == months_avail[-1] else load_all(target_month=selected_month)
     depts = sorted(data[3]["dept"].unique())
     chosen = st.sidebar.multiselect("Подразделение", depts, placeholder="Все")
 else:
+    selected_month = None
+    data = None
     chosen = []
 model = llm.name()
-st.sidebar.caption(f"Нейросеть: {model}" if model else "Нейросеть не подключена, комментарии разбирает словарь")
+st.sidebar.caption(f"ИИ-анализ: {model}" if model else "Офлайн-режим: словарь сигналов")
 
 
 # Раз в минуту забираем новые ответы из почты (форма шлёт письмо после каждого заполнения).
@@ -137,34 +159,68 @@ def page_overview():
     if chosen:
         risk = risk[risk["dept"].isin(chosen)]
     names = set(risk["intern"])
-    a, mon, com = a[a["intern"].isin(names)], mon[mon["intern"].isin(names)], com[com["intern"].isin(names)]
-    last = int(data[1]["month"].max())
+    last = int(selected_month) if selected_month is not None else int(data[1]["month"].max())
+    a = a[a["intern"].isin(names) & (a["month"] <= last)]
+    mon = mon[mon["intern"].isin(names) & (mon["month"] <= last)]
+    com = com[com["intern"].isin(names) & (com["month"] <= last)]
     cur, prev = mon[mon["month"] == last], mon[mon["month"] == last - 1]
 
-    st.title("Стажировки: общая картина")
-    st.caption(f"Данные за {last} мес. из 6. Сравнение с прошлым месяцем.")
-    st.caption("Зона показывает приоритет контакта по открытым правилам, а не вероятность ухода стажёра.")
-    st.caption("Цитаты из комментариев показаны дословно; имена людей в них скрыты.")
+    st.markdown(
+        f'<div class="mgts-bar"><div><span class="mgts-badge">МГТС</span>'
+        f'<strong>Аналитика стажировок · Месяц {last} из 6</strong></div>'
+        f'<span style="font-size:13px;opacity:0.9;">Стажёры и наставники · Светофор для HR</span></div>',
+        unsafe_allow_html=True,
+    )
 
-    k = st.columns(6)
-    k[0].metric("Стажёров", len(names), help="Число стажёров, для которых в данных есть ответы хотя бы за один месяц.")
+    has_nps = a["kind"].eq("nps").any()
+    k = st.columns(6 if has_nps else 5)
+    k[0].metric("Стажёров", len(names), help="Число стажёров в программе по выбранному фильтру.")
     s_mean, s_prev = cur["s_avg"].mean(), prev["s_avg"].mean()
     m_mean, m_prev = cur["m_avg"].mean(), prev["m_avg"].mean()
     k[1].metric("Оценка стажёров", "нет данных" if pd.isna(s_mean) else f"{s_mean:.1f} / 5",
-                delta(s_mean, s_prev), help="Средняя оценка стажировки в последнем месяце по ответившим стажёрам. Изменение — к прошлому месяцу.")
-    k[2].metric("От наставников", "нет данных" if pd.isna(m_mean) else f"{m_mean:.1f} / 5",
-                delta(m_mean, m_prev), help="Средняя оценка работы стажёров в последнем месяце по ответившим наставникам. Изменение — к прошлому месяцу.")
-    e_now, e_prev = metrics.enps(mon, last), metrics.enps(mon, last - 1)
-    k[3].metric("eNPS", e_now, None if e_now is None or e_prev is None else f"{e_now - e_prev:+d}",
-                help="Готовность рекомендовать стажировку: доля оценок 9–10 минус доля оценок 0–6. Итог в пунктах от −100 до +100; без ответов значения нет.")
-    answered = a.loc[(a["month"] == last) & (a["role"] == "intern") & a["kind"].ne("time"), "intern"].nunique()
-    k[4].metric("Заполнили анкету", f"{answered}/{len(names)}",
-                help="Сколько стажёров ответили в последнем месяце из общего числа стажёров в данных.")
-    high, mid = (risk["level"] == "высокий").sum(), (risk["level"] == "средний").sum()
-    k[5].metric("Нужно внимание", f"{high} + {mid}",
-                help="Сначала число стажёров для разговора на этой неделе, затем число тех, за кем стоит присмотреться.")
+                delta(s_mean, s_prev), help="Средняя оценка стажёров в выбранном месяце и изменение к прошлому.")
+    k[2].metric("Оценка наставников", "нет данных" if pd.isna(m_mean) else f"{m_mean:.1f} / 5",
+                delta(m_mean, m_prev), help="Средняя оценка работы стажёров от наставников в выбранном месяце.")
+    s_ans = a.loc[(a["month"] == last) & (a["role"] == "intern") & a["kind"].ne("time"), "intern"].nunique()
+    m_ans = a.loc[(a["month"] == last) & (a["role"] == "mentor") & a["kind"].ne("time"), "intern"].nunique()
+    high = int((risk["level"] == "высокий").sum())
+    mid = int((risk["level"] == "средний").sum())
+    low = int((risk["level"] == "низкий").sum())
+    if has_nps:
+        e_now, e_prev = metrics.enps(mon, last), metrics.enps(mon, last - 1)
+        k[3].metric("eNPS", e_now, None if e_now is None or e_prev is None else f"{e_now - e_prev:+d}")
+        k[4].metric("Сдали анкеты (С / Н)", f"{s_ans}/{len(names)} · {m_ans}/{len(names)}",
+                    help="Статус прохождения опросов: сколько стажёров и сколько наставников ответили в этом месяце.")
+        k[5].metric("Светофор", f"🔴 {high} · 🟡 {mid} · 🟢 {low}")
+    else:
+        k[3].metric("Сдали анкеты (С / Н)", f"{s_ans}/{len(names)} · {m_ans}/{len(names)}",
+                    help="Статус прохождения опросов: сколько стажёров и сколько наставников ответили в этом месяце.")
+        k[4].metric("Светофор", f"🔴 {high} · 🟡 {mid} · 🟢 {low}",
+                    help="Критичный сигнал / Зона внимания / Всё хорошо.")
 
-    st.subheader("Кому нужно внимание на этой неделе")
+    st.subheader(f"Статус прохождения опросов и светофор · Месяц {last}")
+    st.session_state["attention_names"] = list(risk["intern"])
+    status_df = metrics.survey_status(a, last).merge(
+        risk[["intern", "level", "score", "why"]], left_on="ID стажёра", right_on="intern", how="right"
+    )
+    status_df["Статус"] = status_df["level"].map(ZONE_EMOJI)
+    status_df["Причины"] = status_df["why"].map(lambda w: "; ".join(w[:2]) if w else "Отклонений нет")
+    status_show = status_df[[
+        "Статус", "ID стажёра", "Подразделение", "Наставник",
+        "Опрос стажёра", "Опрос наставника", "Оценка стажёра", "Оценка наставника",
+        "Расхождение (С−Н)", "Балл" if "Балл" in status_df else "score", "Причины",
+    ]].rename(columns={"score": "Приоритет"})
+    st.dataframe(
+        status_show, hide_index=True, width="stretch", key="attention",
+        on_select=open_card, selection_mode="single-row",
+        column_config={
+            "Приоритет": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%d", width="small"),
+            "Причины": st.column_config.TextColumn(width="large"),
+        },
+    )
+    st.caption("Нажмите на строку, чтобы открыть карточку стажёра с полной динамикой, цитатами и рекомендациями.")
+
+    st.subheader("Кому нужно внимание HR")
     done = db.actions(conn)
     done_now = set(done[done["month"] == last]["intern"])
     att = risk[risk["level"] != "низкий"]
@@ -198,23 +254,6 @@ def page_overview():
             d = done[done["month"] == last]
             st.dataframe(pd.DataFrame({"Стажёр": d["intern"], "Действие": d["title"], "Когда": d["done_at"]}),
                          hide_index=True, width="stretch")
-
-    with st.expander("Все стажёры таблицей"):
-        st.session_state["attention_names"] = list(risk["intern"])
-        show = pd.DataFrame({
-            "Стажёр": risk["intern"], "Подразделение": risk["dept"], "Наставник": risk["mentor"],
-            "Зона": risk["level"].map(ZONE), "Балл": risk["score"],
-            "Главные причины": risk["why"].map(lambda w: "; ".join(w[:3])),
-        })
-        st.dataframe(
-            show, hide_index=True, width="stretch", key="attention",
-            on_select=open_card, selection_mode="single-row",
-            column_config={
-                "Балл": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%d", width="small"),
-                "Главные причины": st.column_config.TextColumn(width="large"),
-            },
-        )
-        st.caption("Нажмите на строку, чтобы открыть карточку стажёра.")
 
     ql = metrics.quality(a)
     formal = ql[(ql["month"] == last) & ql["formal"]]
@@ -267,10 +306,21 @@ def page_overview():
                              range=[0, cnt.max() + 0.6])
             st.plotly_chart(style(fig, 300), width="stretch")
     with right:
-        st.markdown("##### Нагрузка наставников")
-        st.dataframe(metrics.mentors(a, mon).round(1), hide_index=True, width="stretch", height=300)
-        st.caption("Если стажёры низко оценивают помощь, а наставнику не хватает времени, "
-                   "дело может быть в загрузке наставника. Таблица показывает число стажёров и обе стороны оценки помощи.")
+        m_df = metrics.mentors(a, mon)
+        if m_df["хватает времени"].notna().any():
+            st.markdown("##### Нагрузка наставников")
+            st.dataframe(m_df.round(1), hide_index=True, width="stretch", height=300)
+            st.caption("Число стажёров и обе стороны оценки помощи.")
+        else:
+            st.markdown(f"##### Стажёр vs наставник · Месяц {last}")
+            cmp = mon[mon["month"] == last][["intern", "s_avg", "m_avg"]].dropna(how="all").sort_values("intern")
+            fig = go.Figure()
+            fig.add_bar(x=cmp["intern"], y=cmp["s_avg"], name="Стажёр", marker_color=BLUE)
+            fig.add_bar(x=cmp["intern"], y=cmp["m_avg"], name="Наставник", marker_color=ORANGE)
+            fig.update_layout(barmode="group")
+            fig.update_yaxes(range=[0, 5.2], title="средняя оценка")
+            st.plotly_chart(style(fig, 300), width="stretch")
+            st.caption("Прямое сравнение средних оценок стажёра и наставника в выбранном периоде.")
 
     st.subheader("Карта оценок: стажёры по месяцам")
     st.caption("Средняя оценка стажёра за месяц. Сверху те, к кому нужно больше внимания. «нет» означает отсутствие оценки.")
@@ -314,11 +364,11 @@ def page_intern():
     lv = dict(zip(risk["intern"], risk["level"]))
     name = st.selectbox("Стажёр", names, key="intern", format_func=lambda n: f"{n} · {ZONE[lv[n]].lower()}")
     r = risk[risk["intern"] == name].iloc[0]
-    m = mon[mon["intern"] == name].sort_values("month")
-    c = com[com["intern"] == name]
-    last = int(mon["month"].max())
+    last = int(selected_month) if selected_month is not None else int(mon["month"].max())
+    m = mon[(mon["intern"] == name) & (mon["month"] <= last)].sort_values("month")
+    c = com[(com["intern"] == name) & (com["month"] <= last)]
     timeline = m.set_index("month").reindex(range(1, last + 1))
-    answers = a[(a["intern"] == name) & a["kind"].ne("time")]
+    answers = a[(a["intern"] == name) & (a["month"] <= last) & a["kind"].ne("time")]
 
     st.title(name)
     st.markdown(f"{badge(r['level'])} {r['dept']} · наставник {r['mentor']}")
@@ -413,8 +463,14 @@ def page_intern():
         fig.update_yaxes(range=[1, 5.1], title="средняя оценка")
         st.plotly_chart(style(fig, 280), width="stretch")
 
+        pg = metrics.paired_gaps(answers, name, last)
+        if not pg.empty:
+            st.markdown(f"##### Сопоставление по общим аспектам · Месяц {last}")
+            st.dataframe(pg, hide_index=True, width="stretch")
+            st.caption("Прямое сравнение одинаковых тем в анкетах стажёра и наставника. Разница ≥ 1.5 поднимает сигнал расхождения.")
+
     st.caption("Оценки ниже приведены к шкале от 1 до 5, где 5 всегда хорошо. Обратные вопросы перевёрнуты.")
-    sc = a[(a["intern"] == name) & (a["kind"] == "scale")]
+    sc = a[(a["intern"] == name) & (a["month"] <= last) & (a["kind"] == "scale")]
     left, right = st.columns(2)
     st.caption("Тепловые карты показывают оценки по каждому вопросу и месяцу; пустая клетка — нет ответа.")
     for col, role, title in [(left, "intern", "Ответы стажёра"), (right, "mentor", "Ответы наставника")]:
@@ -537,11 +593,11 @@ def page_form():
 
     with st.form("anketa"):
         c = st.columns(4)
-        name = c[0].text_input(col["intern"], "Тестов Андрей", key="f_name")
-        dept = c[1].text_input(col["dept"], "Аналитика", key="f_dept")
-        mentor = c[2].text_input(col["mentor"], "Белов А.", key="f_mentor")
+        name = c[0].text_input(col["intern"], "СТ-006", key="f_name")
+        dept = c[1].text_input(col["dept"], "IT", key="f_dept")
+        mentor = c[2].text_input(col["mentor"], "Н-005", key="f_mentor")
         month = c[3].number_input(col["month"], 1, 6, int(data[1]["month"].max()) if data else 1, key="f_month",
-                                  help="Зона считается на самый свежий месяц в базе, поэтому по умолчанию стоит он")
+                                  help="Выберите контрольный период (1–6)")
         answers = {}
         for r in q[q["role"] == role].itertuples():
             if r.kind == "scale":

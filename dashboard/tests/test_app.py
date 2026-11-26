@@ -52,7 +52,7 @@ def test_pages_and_form(tmp_path, monkeypatch):
     assert not at.exception
     text = " ".join(m.value for m in at.markdown)
     assert "намерение уйти" in text
-    assert any("Поговорить на этой неделе" in m.value for m in at.markdown)
+    assert any("Критичный сигнал" in m.value for m in at.markdown)
 
 
 def test_data_page_preflights_and_imports_upload(tmp_path, monkeypatch):

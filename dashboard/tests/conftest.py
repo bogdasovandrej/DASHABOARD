@@ -6,3 +6,7 @@ os.environ["GIGACHAT_KEY"] = ""
 os.environ["LLM_BASE_URL"] = ""
 os.environ["YANDEX_MAIL"] = ""
 os.environ["YANDEX_APP_PASSWORD"] = ""
+os.environ.setdefault("QUESTIONS_CSV", "survey/questions.csv")
+os.environ.setdefault("DEMO_DIR", "data/demo")
+os.environ.setdefault("YANDEX_SUBJECT_INTERN", "[intern]")
+os.environ.setdefault("YANDEX_SUBJECT_MENTOR", "[mentor]")
