@@ -20,14 +20,53 @@ ZONE_COLOR = {"высокий": "red", "средний": "orange", "низкий
 
 st.markdown(
     """<style>
-    .mgts-bar {background: linear-gradient(90deg, #001C3D 0%, #0077CC 65%, #0098EA 100%);
-               color: white; padding: 12px 18px; border-radius: 10px; margin-bottom: 14px;
-               display: flex; align-items: center; justify-content: space-between;}
-    .mgts-badge {background: #0098EA; color: white; font-weight: 700; padding: 4px 10px;
-                 border-radius: 6px; letter-spacing: 0.5px; margin-right: 10px;}
+    .mgts-bar {background: linear-gradient(95deg, #001C3D 0%, #004E98 60%, #0098EA 100%);
+               color: white; padding: 14px 20px; border-radius: 12px; margin-bottom: 16px;
+               display: flex; align-items: center; justify-content: space-between;
+               box-shadow: 0 2px 10px rgba(0,28,61,0.12);}
+    .mgts-sq {background: #0098EA; color: white; font-weight: 800; width: 42px; height: 42px;
+              border-radius: 6px; display: inline-flex; align-items: center; justify-content: center;
+              font-size: 13px; letter-spacing: 0.4px; margin-right: 12px; flex-shrink: 0;}
+    .mgts-side-brand {display: flex; align-items: center; gap: 10px; padding: 6px 2px 14px 2px;
+                      border-bottom: 1px solid #D9E6F2; margin-bottom: 12px;}
+    .mgts-tl-grid {display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 10px 0 18px 0;}
+    .mgts-tl-card {background: #FFFFFF; border-radius: 10px; padding: 14px 16px;
+                   border: 1px solid #E2ECF5; display: flex; align-items: center; gap: 14px;
+                   box-shadow: 0 1px 4px rgba(0,28,61,0.05);}
+    .mgts-dot {width: 14px; height: 14px; border-radius: 50%; flex-shrink: 0;}
+    .mgts-tl-num {font-size: 26px; font-weight: 700; line-height: 1.1; color: #0A1F38;}
+    .mgts-tl-lbl {font-size: 13px; color: #5A6E85; margin-top: 2px;}
+    .score-tbl {width: 100%; border-collapse: separate; border-spacing: 4px; font-size: 13.5px; margin-top: 6px;}
+    .score-tbl th {text-align: center; color: #5A6E85; font-weight: 600; padding: 6px 8px; font-size: 12px;}
+    .score-tbl th:first-child {text-align: left;}
+    .score-tbl td {text-align: center; padding: 7px 10px; border-radius: 6px; font-weight: 600;}
+    .score-tbl td:first-child {text-align: left; font-weight: 500; color: #0A1F38; background: #F6FAFE; padding-left: 10px;}
+    .sc-hi {background: #DCFCE7; color: #166534;}
+    .sc-mid {background: #FEF3C7; color: #92400E;}
+    .sc-lo {background: #FEE2E2; color: #991B1B;}
+    .sc-na {background: #F1F5F9; color: #94A3B8; font-weight: 400;}
     </style>""",
     unsafe_allow_html=True,
 )
+
+
+def render_score_table(table):
+    # Читаемая корпоративная таблица оценок вместо сжатой тепловой карты
+    headers = "".join(f"<th>Мес. {m}</th>" for m in table.columns)
+    rows_html = []
+    for label, row in table.iterrows():
+        cells = [f"<td>{label}</td>"]
+        for val in row:
+            if pd.isna(val):
+                cells.append('<td class="sc-na">—</td>')
+            elif val >= 4.0:
+                cells.append(f'<td class="sc-hi">{val:.1f}</td>')
+            elif val >= 3.0:
+                cells.append(f'<td class="sc-mid">{val:.1f}</td>')
+            else:
+                cells.append(f'<td class="sc-lo">{val:.1f}</td>')
+        rows_html.append("<tr>" + "".join(cells) + "</tr>")
+    return f'<table class="score-tbl"><thead><tr><th>Показатель</th>{headers}</tr></thead><tbody>{"".join(rows_html)}</tbody></table>'
 
 
 def badge(level):
@@ -105,7 +144,13 @@ def open_card():
 
 
 # ---------- боковая панель ----------
-st.sidebar.markdown('<div style="background:#0098EA;color:#fff;font-weight:700;padding:8px 12px;border-radius:8px;font-size:18px;margin-bottom:8px;">МГТС · Стажировки</div>', unsafe_allow_html=True)
+st.sidebar.markdown(
+    '<div class="mgts-side-brand">'
+    '<div class="mgts-sq">МГТС</div>'
+    '<div><div style="font-weight:700;font-size:15px;color:#001C3D;line-height:1.2;">Стажировки</div>'
+    '<div style="font-size:12px;color:#5A6E85;">HR-аналитика</div></div></div>',
+    unsafe_allow_html=True,
+)
 page = st.sidebar.radio("Раздел", PAGES, key="page")
 base_data = load_all()
 if base_data:
@@ -165,38 +210,49 @@ def page_overview():
     com = com[com["intern"].isin(names) & (com["month"] <= last)]
     cur, prev = mon[mon["month"] == last], mon[mon["month"] == last - 1]
 
-    st.markdown(
-        f'<div class="mgts-bar"><div><span class="mgts-badge">МГТС</span>'
-        f'<strong>Аналитика стажировок · Месяц {last} из 6</strong></div>'
-        f'<span style="font-size:13px;opacity:0.9;">Стажёры и наставники · Светофор для HR</span></div>',
-        unsafe_allow_html=True,
-    )
-
-    has_nps = a["kind"].eq("nps").any()
-    k = st.columns(6 if has_nps else 5)
-    k[0].metric("Стажёров", len(names), help="Число стажёров в программе по выбранному фильтру.")
-    s_mean, s_prev = cur["s_avg"].mean(), prev["s_avg"].mean()
-    m_mean, m_prev = cur["m_avg"].mean(), prev["m_avg"].mean()
-    k[1].metric("Оценка стажёров", "нет данных" if pd.isna(s_mean) else f"{s_mean:.1f} / 5",
-                delta(s_mean, s_prev), help="Средняя оценка стажёров в выбранном месяце и изменение к прошлому.")
-    k[2].metric("Оценка наставников", "нет данных" if pd.isna(m_mean) else f"{m_mean:.1f} / 5",
-                delta(m_mean, m_prev), help="Средняя оценка работы стажёров от наставников в выбранном месяце.")
     s_ans = a.loc[(a["month"] == last) & (a["role"] == "intern") & a["kind"].ne("time"), "intern"].nunique()
     m_ans = a.loc[(a["month"] == last) & (a["role"] == "mentor") & a["kind"].ne("time"), "intern"].nunique()
     high = int((risk["level"] == "высокий").sum())
     mid = int((risk["level"] == "средний").sum())
     low = int((risk["level"] == "низкий").sum())
+
+    st.markdown(
+        f'<div class="mgts-bar"><div style="display:flex;align-items:center;">'
+        f'<div class="mgts-sq">МГТС</div>'
+        f'<div><div style="font-weight:700;font-size:18px;">Аналитика программы стажировок · Месяц {last} из 6</div>'
+        f'<div style="font-size:12.5px;opacity:0.85;">Статус прохождения, динамика и сигналы для HR</div></div></div>'
+        f'<div style="font-size:13px;font-weight:600;">Опросы: стажёры {s_ans}/{len(names)} · наставники {m_ans}/{len(names)}</div></div>',
+        unsafe_allow_html=True,
+    )
+
+    has_nps = a["kind"].eq("nps").any()
+    k = st.columns(5 if has_nps else 4)
+    k[0].metric("Стажёров в программе", len(names))
+    s_mean, s_prev = cur["s_avg"].mean(), prev["s_avg"].mean()
+    m_mean, m_prev = cur["m_avg"].mean(), prev["m_avg"].mean()
+    k[1].metric("Средняя стажёров", "нет данных" if pd.isna(s_mean) else f"{s_mean:.1f} / 5", delta(s_mean, s_prev))
+    k[2].metric("Средняя наставников", "нет данных" if pd.isna(m_mean) else f"{m_mean:.1f} / 5", delta(m_mean, m_prev))
     if has_nps:
         e_now, e_prev = metrics.enps(mon, last), metrics.enps(mon, last - 1)
         k[3].metric("eNPS", e_now, None if e_now is None or e_prev is None else f"{e_now - e_prev:+d}")
-        k[4].metric("Сдали анкеты (С / Н)", f"{s_ans}/{len(names)} · {m_ans}/{len(names)}",
-                    help="Статус прохождения опросов: сколько стажёров и сколько наставников ответили в этом месяце.")
-        k[5].metric("Светофор", f"🔴 {high} · 🟡 {mid} · 🟢 {low}")
+        k[4].metric("Сдали анкеты (С / Н)", f"{s_ans}/{len(names)} · {m_ans}/{len(names)}")
     else:
-        k[3].metric("Сдали анкеты (С / Н)", f"{s_ans}/{len(names)} · {m_ans}/{len(names)}",
-                    help="Статус прохождения опросов: сколько стажёров и сколько наставников ответили в этом месяце.")
-        k[4].metric("Светофор", f"🔴 {high} · 🟡 {mid} · 🟢 {low}",
-                    help="Критичный сигнал / Зона внимания / Всё хорошо.")
+        k[3].metric("Сдали анкеты (С / Н)", f"{s_ans}/{len(names)} · {m_ans}/{len(names)}")
+
+    st.markdown(
+        f'<div class="mgts-tl-grid">'
+        f'<div class="mgts-tl-card" style="border-left:4px solid #DC2626;">'
+        f'<div class="mgts-dot" style="background:#DC2626;"></div>'
+        f'<div><div class="mgts-tl-num">{high}</div><div class="mgts-tl-lbl">Критичный сигнал — нужен разговор</div></div></div>'
+        f'<div class="mgts-tl-card" style="border-left:4px solid #D97706;">'
+        f'<div class="mgts-dot" style="background:#D97706;"></div>'
+        f'<div><div class="mgts-tl-num">{mid}</div><div class="mgts-tl-lbl">Зона внимания — проверить детали</div></div></div>'
+        f'<div class="mgts-tl-card" style="border-left:4px solid #16A34A;">'
+        f'<div class="mgts-dot" style="background:#16A34A;"></div>'
+        f'<div><div class="mgts-tl-num">{low}</div><div class="mgts-tl-lbl">Положительная оценка — всё стабильно</div></div></div>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
 
     st.subheader(f"Статус прохождения опросов и светофор · Месяц {last}")
     st.session_state["attention_names"] = list(risk["intern"])
@@ -322,35 +378,10 @@ def page_overview():
             st.plotly_chart(style(fig, 300), width="stretch")
             st.caption("Прямое сравнение средних оценок стажёра и наставника в выбранном периоде.")
 
-    st.subheader("Карта оценок: стажёры по месяцам")
-    st.caption("Средняя оценка стажёра за месяц. Сверху те, к кому нужно больше внимания. «нет» означает отсутствие оценки.")
+    st.subheader("Динамика оценок по стажёрам (по месяцам)")
     table = mon.pivot(index="intern", columns="month", values="s_avg").reindex(index=risk["intern"], columns=range(1, last + 1))
-    st.plotly_chart(heatmap(table, 60 + 24 * len(table)), width="stretch")
-
-    with st.expander("Как выбираем, с кем поговорить"):
-        st.markdown(f"""
-Балл это сумма по простым правилам, от 0 до 100. От {YELLOW} баллов зона «присмотреться». «Поговорить на этой неделе» — от {RED} баллов, если признаки пришли минимум из двух источников: оценки, текст комментариев, поведение (пропуск анкеты, формальные ответы). Прямые слова об уходе — «поговорить» сразу.
-
-| Что случилось | Баллы |
-|---|---|
-| В комментарии есть намерение уйти | 50 |
-| Средняя оценка месяца ниже 3.0 (ниже 3.5) | 30 (15) |
-| Оценка упала на 0.8 и больше к двум прошлым месяцам (на 0.5) | 25 (12) |
-| Не заполнил последнюю анкету | 20 |
-| Средняя оценка наставника ниже 3.0 | 20 |
-| Низкая оценка держится второй месяц | 15 |
-| Оценка снижается три месяца подряд, всего на 0.8 и больше | 15 |
-| Есть оценки 1-2 по отдельным вопросам (второй месяц подряд) | 15 (+10) |
-| Стажёр и наставник расходятся на 1.2 балла и больше | 15 |
-| Другие сигналы в комментариях: перегруз, мало задач и т.д. | 10 за каждый, максимум 20 |
-| Не хочет оставаться, не рекомендует стажировку, наставник не рекомендует в штат | 10 |
-| Негативный тон комментариев | 10 |
-| Анкета заполнена формально (второй месяц подряд) | 8 (+8) |
-| Комментарии стали намного короче | 6 |
-
-Одна плохая цифра или одна фраза может быть случайностью, поэтому высокий балл из одного источника даёт только
-«присмотреться». Все пороги лежат в `core/config.py`.
-""")
+    st.markdown(render_score_table(table), unsafe_allow_html=True)
+    st.caption("Зелёный: 4.0–5.0 · Жёлтый: 3.0–3.9 · Красный: ниже 3.0 · «—»: нет ответа за месяц.")
 
 
 # ---------- карточка стажёра ----------
@@ -464,40 +495,45 @@ def page_intern():
         st.plotly_chart(style(fig, 280), width="stretch")
 
         pg = metrics.paired_gaps(answers, name, last)
-        if not pg.empty:
-            st.markdown(f"##### Сопоставление по общим аспектам · Месяц {last}")
-            st.dataframe(pg, hide_index=True, width="stretch")
-            st.caption("Прямое сравнение одинаковых тем в анкетах стажёра и наставника. Разница ≥ 1.5 поднимает сигнал расхождения.")
+        big_pg = pg[pg["Разница"].abs() >= 1.5]
+        for pr in big_pg.itertuples():
+            st.warning(f"Расхождение по блоку «{pr.Аспект}» в {last}-м месяце: стажёр {pr.Стажёр:.1f} vs наставник {pr.Наставник:.1f} ({pr.Разница:+.1f}).")
 
-    st.caption("Оценки ниже приведены к шкале от 1 до 5, где 5 всегда хорошо. Обратные вопросы перевёрнуты.")
     sc = a[(a["intern"] == name) & (a["month"] <= last) & (a["kind"] == "scale")]
-    left, right = st.columns(2)
-    st.caption("Тепловые карты показывают оценки по каждому вопросу и месяцу; пустая клетка — нет ответа.")
-    for col, role, title in [(left, "intern", "Ответы стажёра"), (right, "mentor", "Ответы наставника")]:
-        with col:
-            st.subheader(title)
-            t = sc[sc["role"] == role].pivot_table(index="short", columns="month", values="score")
-            if t.empty:
-                st.caption("Ответов нет.")
-            else:
-                st.plotly_chart(heatmap(t.reindex(columns=range(1, last + 1)), 70 + 34 * len(t)), width="stretch")
+    t_intern = sc[sc["role"] == "intern"].pivot_table(index="short", columns="month", values="score")
+    t_mentor = sc[sc["role"] == "mentor"].pivot_table(index="short", columns="month", values="score")
+    if not t_intern.empty and not t_mentor.empty:
+        left, right = st.columns(2)
+        with left:
+            st.subheader("Оценки стажёра по месяцам")
+            st.markdown(render_score_table(t_intern.reindex(columns=range(1, last + 1))), unsafe_allow_html=True)
+        with right:
+            st.subheader("Оценки наставника по месяцам")
+            st.markdown(render_score_table(t_mentor.reindex(columns=range(1, last + 1))), unsafe_allow_html=True)
+    elif not t_intern.empty:
+        st.subheader("Оценки стажёра по месяцам")
+        st.markdown(render_score_table(t_intern.reindex(columns=range(1, last + 1))), unsafe_allow_html=True)
+        st.caption("Ответы наставника за этот период пока не поступали.")
+    elif not t_mentor.empty:
+        st.subheader("Оценки наставника по месяцам")
+        st.markdown(render_score_table(t_mentor.reindex(columns=range(1, last + 1))), unsafe_allow_html=True)
+        st.caption("Ответы стажёра за этот период пока не поступали.")
 
-    st.subheader("Комментарии")
-    st.caption("Имена других людей скрыты. Цитата совпадает с показанным текстом комментария.")
     c = c[c["text"].notna() & c["text"].ne("")].sort_values(["month", "role"], ascending=[False, True])
-    if c.empty:
-        st.caption("Комментариев нет.")
-    for x in c.itertuples():
-        who = "Стажёр" if x.role == "intern" else "Наставник"
-        shown_text = comments.mask(x.text, people_names)
-        shown_quote = comments.mask(x.quote, people_names)
-        with st.container(border=True):
-            st.markdown(f"**{x.month} мес. · {who} · {x.short}**")
-            st.write(shown_text)
-            if x.signals:
-                tags = " ".join(f":red-background[{s}]" for s in x.signals)
-                st.markdown(tags + (f"  \nЦитата: «{shown_quote}»" if shown_quote else ""))
-            st.caption(f"тон {x.sentiment:+.1f} · разобрал: {x.source}" if pd.notna(x.sentiment) else "ещё не разобран")
+    if not c.empty:
+        st.subheader("Комментарии")
+        st.caption("Имена других людей скрыты. Цитата совпадает с показанным текстом комментария.")
+        for x in c.itertuples():
+            who = "Стажёр" if x.role == "intern" else "Наставник"
+            shown_text = comments.mask(x.text, people_names)
+            shown_quote = comments.mask(x.quote, people_names)
+            with st.container(border=True):
+                st.markdown(f"**{x.month} мес. · {who} · {x.short}**")
+                st.write(shown_text)
+                if x.signals:
+                    tags = " ".join(f":red-background[{s}]" for s in x.signals)
+                    st.markdown(tags + (f"  \nЦитата: «{shown_quote}»" if shown_quote else ""))
+                st.caption(f"тон {x.sentiment:+.1f} · разобрал: {x.source}" if pd.notna(x.sentiment) else "ещё не разобран")
 
 
 # ---------- эффект ----------
@@ -751,6 +787,25 @@ def page_data():
     with st.expander("Какие вопросы знает дашборд"):
         q = ingest.load_questions()[["column", "role", "kind", "block", "min", "max", "reverse", "avg", "short"]]
         st.dataframe(q, hide_index=True, width="stretch")
+
+    with st.expander("Методика расчёта баллов и светофора"):
+        st.markdown(f"""
+Балл (0–100) — сумма открытых правил. **🟢 0–24** всё хорошо · **🟡 {YELLOW}–{RED - 1}** зона внимания · **🔴 {RED}–100** критичный сигнал (требуется совпадение ≥2 источников: оценки, текст, поведение; прямой сигнал об уходе поднимает 🔴 сразу).
+
+| Признак | Баллы |
+|---|---|
+| В комментарии есть намерение уйти | +50 |
+| Средняя оценка ниже 3.0 (ниже 3.5) | +30 (+15) |
+| Падение на ≥0.8 к прошлым месяцам (≥0.5) | +25 (+12) |
+| Пропущена анкета за контрольный период | +20 |
+| Средняя наставника ниже 3.0 | +20 |
+| Расхождение стажёра и наставника (общее ≥1.2 или по блоку ≥1.5) | +15 |
+| Оценки 1–2 по отдельным вопросам (2 мес. подряд) | +15 (+10) |
+| Спад 3 месяца подряд / низко 2 месяца подряд | +15 |
+| Сигналы в комментариях (перегруз, нет поддержки и др.) | +10 (макс. 20) |
+| Негативный тон комментариев | +10 |
+| Формальная анкета (отписка) / резкое сжатие комментариев | +8 / +6 |
+""")
 
 
 if page == "Данные":
