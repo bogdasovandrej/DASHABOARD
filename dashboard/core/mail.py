@@ -27,10 +27,17 @@ LOOK_BACK_DAYS = 30  # письма старше не смотрим, чтобы
 
 
 def subject_roles():
-    return {
-        os.getenv("YANDEX_SUBJECT_INTERN", "[intern]").lower(): "intern",
-        os.getenv("YANDEX_SUBJECT_MENTOR", "[mentor]").lower(): "mentor",
+    out = {
+        "[intern]": "intern",
+        "[mentor]": "mentor",
+        "[mgts-intern]": "intern",
+        "[mgts-mentor]": "mentor",
     }
+    if os.getenv("YANDEX_SUBJECT_INTERN"):
+        out[os.getenv("YANDEX_SUBJECT_INTERN").lower()] = "intern"
+    if os.getenv("YANDEX_SUBJECT_MENTOR"):
+        out[os.getenv("YANDEX_SUBJECT_MENTOR").lower()] = "mentor"
+    return out
 
 
 def configured():
