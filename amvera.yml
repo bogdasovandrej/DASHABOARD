@@ -1,0 +1,11 @@
+meta:
+  environment: python
+  toolchain:
+    name: pip
+    version: "3.11"
+build:
+  requirementsPath: dashboard/requirements.txt
+run:
+  command: streamlit run dashboard/app.py --server.port=80 --server.address=0.0.0.0 --server.headless=true
+  persistenceMount: /data
+  containerPort: 80

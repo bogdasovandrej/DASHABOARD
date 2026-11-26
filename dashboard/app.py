@@ -1,5 +1,6 @@
 # Интерфейс дашборда. Запуск: streamlit run app.py
 # Здесь только отрисовка. Расчёты лежат в core/metrics.py, разбор комментариев в core/comments.py.
+import os
 import time
 
 import pandas as pd
@@ -103,6 +104,19 @@ def load_demo():
     for name, role in [("otvety_stazhery", "intern"), ("otvety_nastavniki", "mentor")]:
         ingest.ingest(conn, next(demo_dir().glob(name + ".*")), role)
     return comments.run(conn)
+
+
+def ensure_initial_data():
+    # При первом открытии в облаке (Streamlit Cloud / Amvera) сразу подгружаем историю МГТС,
+    # чтобы эксперт видел готовый дашборд без лишних кликов (в автотестах не вмешиваемся).
+    if os.getenv("PYTEST_CURRENT_TEST") or st.session_state.get("bootstrapped"):
+        return
+    st.session_state["bootstrapped"] = True
+    if metrics.load(conn).empty and (demo_dir() / "otvety_stazhery.csv").exists():
+        load_demo()
+
+
+ensure_initial_data()
 
 
 def style(fig, height=320):

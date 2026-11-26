@@ -1,5 +1,7 @@
 .env
 data/dashboard.db
+data/mgts_case*.db
+data/certs/
 __pycache__/
 .pytest_cache/
 data/webhook_log.jsonl

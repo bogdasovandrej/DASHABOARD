@@ -9,17 +9,19 @@ load_dotenv(ROOT / ".env")
 DB_PATH = Path(os.getenv("DB_PATH", ROOT / "data" / "dashboard.db"))
 QUESTIONS_CSV = ROOT / "survey" / "questions.csv"
 DEMO_DIR = ROOT / "data" / "demo"
+MGTS_QUESTIONS_CSV = ROOT / "survey" / "questions_mgts.csv"
+MGTS_DEMO_DIR = ROOT / "data" / "mgts"
 
 
 def questions_csv():
     # другую анкету подключаем так: QUESTIONS_CSV=survey/questions_v2.csv
     p = os.getenv("QUESTIONS_CSV")
-    return ROOT / p if p else QUESTIONS_CSV
+    return ROOT / p if p else MGTS_QUESTIONS_CSV
 
 
 def demo_dir():
     p = os.getenv("DEMO_DIR")
-    return ROOT / p if p else DEMO_DIR
+    return ROOT / p if p else MGTS_DEMO_DIR
 
 
 # Пороги и баллы риска. Вынесены сюда, чтобы на финале менять их в одном месте.
