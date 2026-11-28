@@ -5,3 +5,4 @@ data/certs/
 __pycache__/
 .pytest_cache/
 data/webhook_log.jsonl
+benchmark/
